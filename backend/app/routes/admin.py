@@ -6,7 +6,8 @@
 from datetime import datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
-from jose import JWTError, jwt
+import jwt
+from jwt import InvalidTokenError
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -93,7 +94,7 @@ def require_admin_token(
             settings.JWT_SECRET,
             algorithms=[settings.JWT_ALGORITHM],
         )
-    except JWTError as exc:
+    except InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Token administrateur invalide ou expiré.",
