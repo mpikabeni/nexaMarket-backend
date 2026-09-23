@@ -15,7 +15,7 @@ from app.config import settings
 from app.db import get_db
 from app.models.user import User
 from app.models.channel import Channel
-from app.models.listing import Listing
+from app.models.listing import Listings
 from app.models.transaction import Transaction
 from app.models.report import Report
 from app.models.wallet import Wallet
