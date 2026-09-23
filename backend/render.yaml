@@ -1,0 +1,255 @@
+services:
+
+  # =======================================================
+  # NEXMARKET API
+  # =======================================================
+
+  - type: web
+    name: nexmarket-api
+    runtime: docker
+    rootDir: backend
+
+    healthCheckPath: /health
+
+    envVars:
+
+      # ---------------------------------------------------
+      # APPLICATION
+      # ---------------------------------------------------
+
+      - key: APP_NAME
+        value: NexMarket API
+
+      - key: APP_VERSION
+        value: 1.0.0
+
+      - key: ENVIRONMENT
+        value: production
+
+      - key: FRONTEND_URL
+        value: https://nexamarketf.netlify.app
+
+
+      # ---------------------------------------------------
+      # DATABASE
+      # ---------------------------------------------------
+
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nexmarket-db
+          property: connectionString
+
+
+      # ---------------------------------------------------
+      # TELEGRAM
+      # ---------------------------------------------------
+
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+
+
+      # ---------------------------------------------------
+      # SECURITY
+      # ---------------------------------------------------
+
+      - key: JWT_SECRET
+        generateValue: true
+
+      - key: JWT_ALGORITHM
+        value: HS256
+
+      - key: ADMIN_TOKEN_EXPIRE_MINUTES
+        value: 60
+
+      - key: ADMIN_CODE
+        sync: false
+
+
+      # ---------------------------------------------------
+      # NEXMARKET
+      # ---------------------------------------------------
+
+      - key: NEXMARKET_FEE_RATE
+        value: 0.0
+
+      - key: LISTING_PUBLISH_FEE
+        value: 0.0
+
+      - key: DEFAULT_CURRENCY
+        value: XAF
+
+
+      # ---------------------------------------------------
+      # MONEY FUSION
+      # ---------------------------------------------------
+
+      - key: MONEYFUSION_API_URL
+        sync: false
+
+      - key: MONEYFUSION_RETURN_URL
+        value: https://nexamarketf.netlify.app/
+
+      - key: MONEYFUSION_PAYIN_WEBHOOK_URL
+        sync: false
+
+      - key: MONEYFUSION_API_KEY
+        sync: false
+
+      - key: MONEYFUSION_WITHDRAW_URL
+        value: https://pay.moneyfusion.net/api/v1/withdraw
+
+      - key: MONEYFUSION_WITHDRAW_METHODS_URL
+        value: https://pay.moneyfusion.net/api/v1/withdraw/methods
+
+      - key: MONEYFUSION_PAYOUT_WEBHOOK_URL
+        sync: false
+
+      - key: MONEYFUSION_PAYMENT_STATUS_URL
+        value: https://pay.moneyfusion.net/paiementNotif
+
+
+      # ---------------------------------------------------
+      # CORS
+      # ---------------------------------------------------
+
+      - key: CORS_ORIGINS
+        value: https://nexamarketf.netlify.app
+
+
+  # =======================================================
+  # NEXMARKET TELEGRAM BOT
+  # =======================================================
+
+  - type: worker
+    name: nexmarket-bot
+    runtime: docker
+    rootDir: backend
+
+    dockerCommand: python bot.py
+
+    envVars:
+
+      # ---------------------------------------------------
+      # APPLICATION
+      # ---------------------------------------------------
+
+      - key: APP_NAME
+        value: NexMarket Bot
+
+      - key: APP_VERSION
+        value: 1.0.0
+
+      - key: ENVIRONMENT
+        value: production
+
+
+      # ---------------------------------------------------
+      # DATABASE
+      # ---------------------------------------------------
+
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nexmarket-db
+          property: connectionString
+
+
+      # ---------------------------------------------------
+      # TELEGRAM
+      # ---------------------------------------------------
+
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+
+      - key: TELEGRAM_BOT_USERNAME
+        sync: false
+
+      - key: TELEGRAM_WEBHOOK_SECRET
+        sync: false
+
+
+      # ---------------------------------------------------
+      # SECURITY
+      # ---------------------------------------------------
+
+      - key: JWT_SECRET
+        fromService:
+          type: web
+          name: nexmarket-api
+          envVarKey: JWT_SECRET
+
+      - key: JWT_ALGORITHM
+        value: HS256
+
+      - key: ADMIN_TOKEN_EXPIRE_MINUTES
+        value: 60
+
+      - key: ADMIN_CODE
+        sync: false
+
+
+      # ---------------------------------------------------
+      # NEXMARKET
+      # ---------------------------------------------------
+
+      - key: NEXMARKET_FEE_RATE
+        value: 0.0
+
+      - key: LISTING_PUBLISH_FEE
+        value: 0.0
+
+      - key: DEFAULT_CURRENCY
+        value: XAF
+
+
+      # ---------------------------------------------------
+      # MONEY FUSION
+      # ---------------------------------------------------
+
+      - key: MONEYFUSION_API_URL
+        sync: false
+
+      - key: MONEYFUSION_RETURN_URL
+        value: https://nexamarketf.netlify.app/
+
+      - key: MONEYFUSION_PAYIN_WEBHOOK_URL
+        sync: false
+
+      - key: MONEYFUSION_API_KEY
+        sync: false
+
+      - key: MONEYFUSION_WITHDRAW_URL
+        value: https://pay.moneyfusion.net/api/v1/withdraw
+
+      - key: MONEYFUSION_WITHDRAW_METHODS_URL
+        value: https://pay.moneyfusion.net/api/v1/withdraw/methods
+
+      - key: MONEYFUSION_PAYOUT_WEBHOOK_URL
+        sync: false
+
+      - key: MONEYFUSION_PAYMENT_STATUS_URL
+        value: https://pay.moneyfusion.net/paiementNotif
+
+      # ---------------------------------------------------
+      # CORS
+      # ---------------------------------------------------
+
+      - key: CORS_ORIGINS
+        value: https://nexamarketf.netlify.app
+
+
+# =========================================================
+# POSTGRESQL
+# =========================================================
+
+databases:
+
+  - name: nexmarket-db
+    databaseName: nexmarket
+    user: nexmarket
+    plan: free
