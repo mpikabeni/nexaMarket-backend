@@ -13,7 +13,7 @@ from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models.channel import Channel
-from app.models.listing import Listing
+from app.models.listings import Listing
 from app.models.message import Message
 from app.models.platform import PlatformLedger, PlatformWallet
 from app.models.report import Report
