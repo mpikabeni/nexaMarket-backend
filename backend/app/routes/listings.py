@@ -12,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models.channel import Channel
-from app.models.listing import Listing
+from app.models.listings import Listing
 from app.models.user import User
 from app.schemas import ListingCreate, ListingUpdate
 
