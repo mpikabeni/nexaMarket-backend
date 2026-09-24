@@ -1,16 +1,16 @@
 # backend/app/models/__init__.py
 
-from app.models.user import User
-from app.models.channel import Channel
-from app.models.listings import Listing
-from app.models.wallet import Wallet, WalletOperation
-from app.models.transaction import Transaction
-from app.models.message import Message
-from app.models.favorite import Favorite
-from app.models.review import Review
-from app.models.report import Report
-from app.models.platform import PlatformWallet, PlatformLedger
-
+from . import auth
+from . import users
+from . import wallet
+from . import channels
+from . import listings
+from . import transactions
+from . import messages
+from . import admin
+from . import reports
+from . import favorites
+from . import reviews
 
 __all__ = [
     "User",
