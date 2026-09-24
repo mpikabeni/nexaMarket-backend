@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import get_current_user
 from app.models.user import User
-from app.models.listing import Listing
+from app.models.listings import Listing
 from app.models.transaction import Transaction
 from app.models.report import Report
 from app.schemas import ReportCreate, ReportResponse
