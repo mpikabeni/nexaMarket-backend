@@ -98,7 +98,7 @@ def init_db() -> None:
     # connaisse tous les modèles avant create_all().
     from app.models.user import User
     from app.models.channel import Channel
-    from app.models.listing import Listing
+    from app.models.listings import Listing
     from app.models.wallet import Wallet
     from app.models.transaction import Transaction
     from app.models.message import Message
