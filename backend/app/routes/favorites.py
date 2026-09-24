@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from app.db import get_db
 from app.deps import get_current_user
 from app.models.favorite import Favorite
-from app.models.listing import Listing
+from app.models.listings import Listing
 from app.models.user import User
 
 
