@@ -5,8 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+
 import fastapi
 from sqlalchemy.orm import Session
+from sqlalchemy import or_
 
 from app.config import settings
 from app.db import get_db
