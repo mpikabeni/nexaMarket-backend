@@ -89,3 +89,9 @@ def api_health():
         "status": "ok",
         "service": "nexmarket-api",
     }
+@app.get("/TEST-NEXMARKET")
+def test_nexmarket():
+    return {
+        "status": "OK",
+        "message": "C'est bien ce main.py qui est lancé"
+    }
