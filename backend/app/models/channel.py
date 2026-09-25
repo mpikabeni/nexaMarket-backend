@@ -128,51 +128,51 @@ owner_id: Mapped[int] = mapped_column(
     index=True,
 )
 
-    # =========================================================
-    # STATUS
-    # =========================================================
+# =========================================================
+# STATUS
+# =========================================================
 
-    is_active: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
-        nullable=False,
-    )
+is_active: Mapped[bool] = mapped_column(
+    Boolean,
+    default=True,
+    nullable=False,
+)
 
-    # =========================================================
-    # TIMESTAMPS
-    # =========================================================
+# =========================================================
+# TIMESTAMPS
+# =========================================================
 
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        nullable=False,
-    )
+created_at: Mapped[datetime] = mapped_column(
+    DateTime,
+    default=datetime.utcnow,
+    nullable=False,
+)
 
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
+updated_at: Mapped[datetime] = mapped_column(
+    DateTime,
+    default=datetime.utcnow,
+    onupdate=datetime.utcnow,
+    nullable=False,
+)
 
-    # =========================================================
-    # RELATIONSHIPS
-    # =========================================================
+# =========================================================
+# RELATIONSHIPS
+# =========================================================
 
-    owner = relationship(
+owner = relationship(
     "User",
     back_populates="channels",
 )
 
-    listings = relationship(
-        "Listing",
-        back_populates="channel",
-        cascade="all, delete-orphan",
-    )
+listings = relationship(
+    "Listing",
+    back_populates="channel",
+    cascade="all, delete-orphan",
+)
 
-    def __repr__(self) -> str:
-        return (
-            f"<Channel id={self.id} "
-            f"title={self.title!r} "
-            f"username={self.username!r}>"
-        )
+def __repr__(self) -> str:
+    return (
+        f"<Channel id={self.id} "
+        f"title={self.title!r} "
+        f"username={self.username!r}>"
+    )
