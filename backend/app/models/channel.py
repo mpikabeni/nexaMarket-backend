@@ -2,7 +2,7 @@
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -118,14 +118,15 @@ class Channel(Base):
         nullable=True,
     )
 
-    # =========================================================
-    # OWNER
-    # =========================================================
+   # =========================================================
+# OWNER
+# =========================================================
 
-    owner_id: Mapped[int] = mapped_column(
-        nullable=False,
-        index=True,
-    )
+owner_id: Mapped[int] = mapped_column(
+    ForeignKey("users.id"),
+    nullable=False,
+    index=True,
+)
 
     # =========================================================
     # STATUS
@@ -159,11 +160,9 @@ class Channel(Base):
     # =========================================================
 
     owner = relationship(
-        "User",
-        back_populates="channels",
-        primaryjoin="Channel.owner_id == User.id",
-        foreign_keys=[owner_id],
-    )
+    "User",
+    back_populates="channels",
+)
 
     listings = relationship(
         "Listing",
