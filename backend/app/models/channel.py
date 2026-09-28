@@ -1,14 +1,8 @@
+# backend/app/models/channel.py
+
 from datetime import datetime
 
-from sqlalchemy import (
-    BigInteger,
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-)
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -129,7 +123,6 @@ class Channel(Base):
     # =========================================================
 
     owner_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id"),
         nullable=False,
         index=True,
     )
@@ -168,6 +161,8 @@ class Channel(Base):
     owner = relationship(
         "User",
         back_populates="channels",
+        primaryjoin="Channel.owner_id == User.id",
+        foreign_keys=[owner_id],
     )
 
     listings = relationship(
