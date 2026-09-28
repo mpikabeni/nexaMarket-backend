@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     # 0.05 = 5 %
     #
     # À définir dans Render.
-    NEXMARKET_FEE_RATE: float = 0.0
+    NEXMARKET_FEE_RATE: float = 0.05
 
     # Frais de publication.
     # 0 = publication gratuite.

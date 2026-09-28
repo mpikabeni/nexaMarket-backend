@@ -98,14 +98,14 @@ def init_db() -> None:
     # connaisse tous les modèles avant create_all().
     from app.models.user import User
     from app.models.channel import Channel
-    from app.models.listings import Listing
+    from app.models.listing import Listing
     from app.models.wallet import Wallet
     from app.models.transaction import Transaction
     from app.models.message import Message
     from app.models.favorite import Favorite
     from app.models.review import Review
     from app.models.report import Report
-    from app.models.platform import PlatformWallet, PlatformLedger
+    from app.models.plateform import PlatformWallet, PlatformLedger
 
     # Évite les avertissements de linters concernant les imports
     # utilisés uniquement pour enregistrer les modèles.
