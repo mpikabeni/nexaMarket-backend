@@ -76,7 +76,7 @@ services:
       # ---------------------------------------------------
 
       - key: NEXMARKET_FEE_RATE
-        value: 0.0
+        value: 0.05
 
       - key: LISTING_PUBLISH_FEE
         value: 0.0
@@ -198,7 +198,7 @@ services:
       # ---------------------------------------------------
 
       - key: NEXMARKET_FEE_RATE
-        value: 0.0
+        value: 0.05
 
       - key: LISTING_PUBLISH_FEE
         value: 0.0

@@ -44,9 +44,7 @@ logger = logging.getLogger("nexmarket.bot")
 # TELEGRAM SERVICE
 # =========================================================
 
-telegram_service = TelegramService(
-    settings.TELEGRAM_BOT_TOKEN
-)
+telegram_service = TelegramService()
 
 
 # =========================================================
@@ -60,7 +58,7 @@ BOT_USERNAME = (
 
 FRONTEND_URL = (
     settings.FRONTEND_URL
-    or "https://nexamarke.netlify.app"
+    or "https://nexamarketf.netlify.app"
 ).rstrip("/")
 
 
@@ -149,61 +147,31 @@ async def start_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ):
-    try:
-        if not update.message:
-            logger.warning("Commande /start reçue sans message.")
-            return
 
-        user = update.effective_user
+    user = update.effective_user
 
-        if not user:
-            logger.warning("Commande /start reçue sans utilisateur.")
-            return
+    if not user:
+        return
 
-        logger.info(
-            "Commande /start reçue de Telegram ID=%s username=%s",
-            user.id,
-            user.username,
-        )
+    text = (
+        "👋 <b>Bienvenue sur NexMarket</b>\n\n"
+        "La marketplace dédiée à l'achat et à la "
+        "vente de canaux Telegram.\n\n"
+        "Avec NexMarket, vous pouvez :\n\n"
+        "• rechercher des canaux Telegram\n"
+        "• publier votre canal\n"
+        "• acheter un canal\n"
+        "• vendre votre canal\n"
+        "• suivre vos transactions\n"
+        "• communiquer avec l'équipe NexMarket\n\n"
+        "<b>Propulsé par NEXA.</b>"
+    )
 
-        text = (
-            "👋 <b>Bienvenue sur NexMarket</b>\n\n"
-            "La marketplace dédiée à l'achat et à la "
-            "vente de canaux Telegram.\n\n"
-            "Avec NexMarket, vous pouvez :\n\n"
-            "• rechercher des canaux Telegram\n"
-            "• publier votre canal\n"
-            "• acheter un canal\n"
-            "• vendre votre canal\n"
-            "• suivre vos transactions\n"
-            "• communiquer avec l'équipe NexMarket\n\n"
-            "<b>Propulsé par NEXA.</b>"
-        )
-
-        await update.message.reply_text(
-            text,
-            parse_mode=ParseMode.HTML,
-            reply_markup=main_keyboard(),
-        )
-
-        logger.info(
-            "/start répondu avec succès à Telegram ID=%s",
-            user.id,
-        )
-
-    except Exception:
-        logger.exception("Erreur pendant l'exécution de /start")
-
-        try:
-            if update.message:
-                await update.message.reply_text(
-                    "❌ Une erreur est survenue. "
-                    "Réessaie dans quelques secondes."
-                )
-        except Exception:
-            logger.exception(
-                "Impossible d'envoyer le message d'erreur de /start"
-            )
+    await update.message.reply_text(
+        text,
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(),
+    )
 
 
 # =========================================================
@@ -306,7 +274,8 @@ async def verify_command(
     try:
 
         result = await telegram_service.verify_channel(
-            channel_username
+            channel_username,
+            user.id,
         )
 
     except Exception as exc:
@@ -930,15 +899,16 @@ async def error_handler(
 def build_application():
 
     if not settings.TELEGRAM_BOT_TOKEN:
+
         raise RuntimeError(
             "TELEGRAM_BOT_TOKEN n'est pas configuré."
         )
 
-    logger.info("Initialisation du bot Telegram...")
-
     application = (
         Application.builder()
-        .token(settings.TELEGRAM_BOT_TOKEN.strip())
+        .token(
+            settings.TELEGRAM_BOT_TOKEN
+        )
         .build()
     )
 
@@ -1035,10 +1005,6 @@ def build_application():
         error_handler
     )
 
-    logger.info(
-        "Handlers Telegram enregistrés avec succès."
-    )
-
     return application
 
 
@@ -1091,46 +1057,16 @@ async def callback_query_handler(
 
 def main():
 
-    try:
-        logger.info(
-            "========================================"
-        )
-        logger.info(
-            "NexMarket Bot démarrage..."
-        )
-        logger.info(
-            "========================================"
-        )
+    application = build_application()
 
-        if not settings.TELEGRAM_BOT_TOKEN:
-            raise RuntimeError(
-                "TELEGRAM_BOT_TOKEN n'est pas configuré."
-            )
+    logger.info(
+        "NexMarket Bot démarrage..."
+    )
 
-        logger.info(
-            "Token Telegram détecté."
-        )
-
-        application = build_application()
-
-        logger.info(
-            "Application Telegram construite."
-        )
-
-        logger.info(
-            "Démarrage du polling Telegram..."
-        )
-
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-        )
-
-    except Exception:
-        logger.exception(
-            "ERREUR FATALE DU BOT NEXMARKET"
-        )
-        raise
+    application.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,
+    )
 
 
 if __name__ == "__main__":
