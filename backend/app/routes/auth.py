@@ -1,12 +1,12 @@
-from __future__ import annotations
-
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import validate_telegram_init_data
+from app.auth import create_access_token, validate_telegram_init_data
+from app.config import settings
 from app.db import get_db
 from app.models.user import User
+from app.models.wallet import Wallet
 
 
 router = APIRouter(
@@ -15,178 +15,130 @@ router = APIRouter(
 )
 
 
-# =========================================================
-# UTILITAIRE : CREER / RECUPERER UN UTILISATEUR TELEGRAM
-# =========================================================
-
-async def get_or_create_user(
-    db: AsyncSession,
-    telegram_user: dict,
-) -> User:
-
-    telegram_id = telegram_user.get("id")
-
-    if not telegram_id:
-        raise HTTPException(
-            status_code=400,
-            detail="Identifiant Telegram manquant.",
-        )
-
-    result = await db.execute(
-        select(User).where(
-            User.telegram_id == int(telegram_id)
-        )
-    )
-
-    user = result.scalar_one_or_none()
-
-    if user:
-        # Mise à jour des informations Telegram
-        # disponibles.
-        if telegram_user.get("first_name"):
-            user.first_name = telegram_user.get(
-                "first_name"
-            )
-
-        if telegram_user.get("last_name"):
-            user.last_name = telegram_user.get(
-                "last_name"
-            )
-
-        if telegram_user.get("username"):
-            user.username = telegram_user.get(
-                "username"
-            )
-
-        if telegram_user.get("photo_url"):
-            user.photo_url = telegram_user.get(
-                "photo_url"
-            )
-
-        await db.flush()
-
-        return user
-
-    # =====================================================
-    # CREATION DU COMPTE
-    # =====================================================
-
-    # Le NEXA ID est interne à NexMarket.
-    # Il ne remplace pas l'identifiant Telegram.
-    result = await db.execute(
-        select(User.id)
-        .order_by(User.id.desc())
-        .limit(1)
-    )
-
-    last_id = result.scalar_one_or_none()
-
-    next_id = (
-        int(last_id or 0) + 1
-    )
-
-    nexa_id = f"NEXA-{next_id:06d}"
-
-    user = User(
-        telegram_id=int(telegram_id),
-        nexa_id=nexa_id,
-
-        first_name=telegram_user.get(
-            "first_name"
-        ),
-        last_name=telegram_user.get(
-            "last_name"
-        ),
-        username=telegram_user.get(
-            "username"
-        ),
-        photo_url=telegram_user.get(
-            "photo_url"
-        ),
-
-        is_active=True,
-        is_admin=False,
-    )
-
-    db.add(user)
-
-    await db.flush()
-
-    return user
-
-
-# =========================================================
-# LOGIN TELEGRAM MINI APP
-# =========================================================
-
 @router.post("/telegram")
-async def telegram_login(
-    x_telegram_init_data: str | None = Header(
-        default=None,
-        alias="X-Telegram-Init-Data",
-    ),
+async def authenticate_telegram(
+    init_data: str,
     db: AsyncSession = Depends(get_db),
 ):
     """
     Authentifie un utilisateur depuis Telegram Mini App.
 
-    Le frontend doit envoyer :
-
-    X-Telegram-Init-Data: <initData Telegram>
-
-    Aucun mot de passe ou email n'est nécessaire.
+    Le frontend envoie le initData brut fourni par Telegram.
     """
 
-    if not x_telegram_init_data:
-        raise HTTPException(
-            status_code=401,
-            detail=(
-                "X-Telegram-Init-Data est obligatoire."
-            ),
+    telegram_data = validate_telegram_init_data(init_data)
+
+    telegram_id = telegram_data["telegram_id"]
+
+    result = await db.execute(
+        select(User).where(
+            User.telegram_id == telegram_id
         )
-
-    try:
-        telegram_user = validate_telegram_init_data(
-            x_telegram_init_data
-        )
-
-    except Exception as exc:
-        raise HTTPException(
-            status_code=401,
-            detail="Données Telegram invalides.",
-        ) from exc
-
-    if not telegram_user:
-        raise HTTPException(
-            status_code=401,
-            detail="Utilisateur Telegram introuvable.",
-        )
-
-    user = await get_or_create_user(
-        db,
-        telegram_user,
     )
+
+    user = result.scalar_one_or_none()
+
+    # ========================================================
+    # CRÉATION DU COMPTE
+    # ========================================================
+
+    if user is None:
+        # Génération d'un Nexa ID interne/public
+        nexa_id = f"NX{telegram_id}"
+
+        # Éviter une collision éventuelle
+        existing_nexa = await db.execute(
+            select(User).where(
+                User.nexa_id == nexa_id
+            )
+        )
+
+        if existing_nexa.scalar_one_or_none() is not None:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Impossible de créer l'identifiant Nexa.",
+            )
+
+        user = User(
+            telegram_id=telegram_id,
+            username=telegram_data.get("username"),
+            first_name=telegram_data.get("first_name"),
+            last_name=telegram_data.get("last_name"),
+            photo_url=telegram_data.get("photo_url"),
+            nexa_id=nexa_id,
+            language="fr",
+            preferred_currency="XAF",
+            is_active=True,
+            is_admin=False,
+        )
+
+        db.add(user)
+
+        await db.flush()
+
+        # ====================================================
+        # WALLET
+        # ====================================================
+
+        wallet = Wallet(
+            user_id=user.id,
+            available_balance=0,
+            blocked_balance=0,
+            total_revenue=0,
+            currency="XAF",
+        )
+
+        db.add(wallet)
+
+        await db.commit()
+
+        await db.refresh(user)
+
+    else:
+        # ====================================================
+        # MISE À JOUR DES DONNÉES TELEGRAM
+        # ====================================================
+
+        user.username = telegram_data.get("username")
+        user.first_name = telegram_data.get("first_name")
+        user.last_name = telegram_data.get("last_name")
+        user.photo_url = telegram_data.get("photo_url")
+
+        await db.commit()
+
+        await db.refresh(user)
+
+    # ========================================================
+    # VÉRIFICATION DU COMPTE
+    # ========================================================
 
     if not user.is_active:
         raise HTTPException(
-            status_code=403,
-            detail="Compte NexMarket désactivé.",
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Votre compte NexMarket est désactivé.",
         )
 
-    await db.commit()
+    # ========================================================
+    # JWT
+    # ========================================================
+
+    access_token = create_access_token(
+        user.id
+    )
 
     return {
-        "authenticated": True,
+        "access_token": access_token,
+        "token_type": "bearer",
+        "expires_in_minutes": settings.JWT_EXPIRE_MINUTES,
         "user": {
             "id": user.id,
-            "nexa_id": user.nexa_id,
             "telegram_id": user.telegram_id,
+            "username": user.username,
             "first_name": user.first_name,
             "last_name": user.last_name,
-            "username": user.username,
             "photo_url": user.photo_url,
-            "is_admin": user.is_admin,
+            "nexa_id": user.nexa_id,
             "language": user.language,
-            "currency": user.currency,
+            "preferred_currency": user.preferred_currency,
         },
     }
