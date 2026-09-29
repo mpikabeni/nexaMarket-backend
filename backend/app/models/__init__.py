@@ -1,28 +1,33 @@
-# backend/app/models/__init__.py
+"""
+NexMarket database models.
 
-from app.models.user import User
+Tous les modèles SQLAlchemy sont importés ici afin que
+SQLAlchemy puisse enregistrer leurs tables et relations.
+"""
+
 from app.models.channel import Channel
-from app.models.listing import Listing
-from app.models.wallet import Wallet, WalletOperation
-from app.models.transaction import Transaction
-from app.models.message import Message
 from app.models.favorite import Favorite
-from app.models.review import Review
-from app.models.report import Report
+from app.models.listing import Listing
+from app.models.message import Message
 from app.models.plateform import PlatformWallet, PlatformLedger
+from app.models.report import Report
+from app.models.review import Review
+from app.models.transaction import Transaction
+from app.models.user import User
+from app.models.wallet import Wallet, WalletOperation
 
 
 __all__ = [
-    "User",
     "Channel",
-    "Listing",
-    "Wallet",
-    "WalletOperation",
-    "Transaction",
-    "Message",
     "Favorite",
-    "Review",
-    "Report",
+    "Listing",
+    "Message",
     "PlatformWallet",
     "PlatformLedger",
+    "Report",
+    "Review",
+    "Transaction",
+    "User",
+    "Wallet",
+    "WalletOperation",
 ]
