@@ -1,55 +1,42 @@
 # =========================================================
-# NEXMARKET BACKEND
+# NEXMARKET BACKEND — FINAL
 # =========================================================
 
 # -------------------------
-# FASTAPI
+# API
 # -------------------------
-
 fastapi==0.115.14
 uvicorn[standard]==0.34.3
-
 
 # -------------------------
 # DATABASE
 # -------------------------
-
 SQLAlchemy==2.0.41
 psycopg[binary]==3.2.9
-
 
 # -------------------------
 # CONFIGURATION
 # -------------------------
-
 pydantic==2.11.7
 pydantic-settings==2.10.1
 python-dotenv==1.1.1
 
-
 # -------------------------
-# AUTHENTIFICATION / JWT
+# AUTHENTICATION
 # -------------------------
-
 PyJWT==2.10.1
 
-
 # -------------------------
-# HTTP
+# HTTP / API PROVIDERS
 # -------------------------
-
 httpx==0.28.1
 
-
 # -------------------------
-# TELEGRAM BOT
+# TELEGRAM
 # -------------------------
-
 python-telegram-bot==22.8
 
-
 # -------------------------
-# FORM / MULTIPART
+# FILE UPLOADS
 # -------------------------
-
 python-multipart==0.0.20
