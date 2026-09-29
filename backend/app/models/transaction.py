@@ -1,9 +1,14 @@
-# backend/app/models/transaction.py
-
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -13,14 +18,17 @@ class Transaction(Base):
     __tablename__ = "transactions"
 
     # =========================================================
-    # IDENTIFICATION
+    # IDENTIFIANT
     # =========================================================
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
 
+    # Référence publique/interne NexMarket.
+    # Elle doit être unique et générée côté backend.
     reference: Mapped[str] = mapped_column(
         String(100),
         unique=True,
@@ -29,7 +37,7 @@ class Transaction(Base):
     )
 
     # =========================================================
-    # LISTING / USERS
+    # RELATIONS
     # =========================================================
 
     listing_id: Mapped[int] = mapped_column(
@@ -50,7 +58,6 @@ class Transaction(Base):
         index=True,
     )
 
-    # Administrateur qui prend en charge la transaction
     assigned_admin_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
@@ -58,61 +65,63 @@ class Transaction(Base):
     )
 
     # =========================================================
-    # AMOUNTS
+    # MONTANTS
     # =========================================================
 
-    # Prix accepté du canal
+    # Prix original de l'annonce.
     channel_price: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         nullable=False,
     )
 
-    # Commission NexMarket
+    # Commission NexMarket.
     platform_fee: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
-        default=Decimal("0.00"),
         nullable=False,
     )
 
-    # Frais du prestataire de paiement, s'ils existent
+    # Frais éventuels du fournisseur de paiement.
     provider_fee: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         default=Decimal("0.00"),
         nullable=False,
     )
 
-    # Total payé par l'acheteur
+    # Montant total payé par l'acheteur.
     total_buyer_amount: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         nullable=False,
     )
 
-    # Montant final versé au vendeur
+    # Montant destiné au vendeur après commission.
     seller_amount: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         nullable=False,
     )
 
+    # =========================================================
+    # MONNAIE
+    # =========================================================
+
+    # La monnaie est copiée depuis le Listing au moment
+    # de la création de la transaction.
     currency: Mapped[str] = mapped_column(
         String(10),
-        default="XAF",
+        nullable=False,
+        index=True,
+    )
+
+    # Taux réellement appliqué à cette transaction.
+    # Il reste à 5 % même si la configuration change plus tard.
+    platform_fee_rate: Mapped[Decimal] = mapped_column(
+        Numeric(8, 6),
+        default=Decimal("0.050000"),
         nullable=False,
     )
 
     # =========================================================
-    # STATUS
+    # ESCROW / STATUT
     # =========================================================
-    #
-    # pending_payment
-    # payment_confirmed
-    # waiting_admin
-    # assigned
-    # transfer_pending
-    # completed
-    # cancelled
-    # disputed
-    # refunded
-    #
 
     status: Mapped[str] = mapped_column(
         String(40),
@@ -121,8 +130,21 @@ class Transaction(Base):
         index=True,
     )
 
+    # Statuts prévus :
+    #
+    # pending_payment
+    # payment_confirmed
+    # waiting_admin
+    # assigned
+    # transfer_pending
+    # protection_period
+    # completed
+    # cancelled
+    # disputed
+    # refunded
+
     # =========================================================
-    # PAYMENT
+    # PAIEMENT
     # =========================================================
 
     payment_provider: Mapped[str | None] = mapped_column(
@@ -133,94 +155,155 @@ class Transaction(Base):
     payment_reference: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
+        unique=True,
         index=True,
     )
 
-    payment_status: Mapped[str] = mapped_column(
+    payment_status: Mapped[str | None] = mapped_column(
         String(40),
-        default="pending",
+        nullable=True,
+        index=True,
+    )
+
+    payment_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # =========================================================
+    # ESCROW
+    # =========================================================
+
+    escrow_held: Mapped[bool] = mapped_column(
+        default=False,
         nullable=False,
         index=True,
     )
 
-    # =========================================================
-    # TELEGRAM TRANSFER
-    # =========================================================
-
-    # Telegram chat ID du canal concerné
-    telegram_chat_id: Mapped[int | None] = mapped_column(
+    escrow_held_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
-        index=True,
     )
 
+    # Date à partir de laquelle l'argent peut être libéré
+    # si aucune contestation n'est ouverte.
+    protection_ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # =========================================================
+    # TRANSFERT DU CANAL
+    # =========================================================
+
     transfer_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
     transfer_completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    buyer_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    admin_validated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
         nullable=True,
     )
 
     # =========================================================
-    # ADMIN / DISPUTE
+    # LITIGE
     # =========================================================
-
-    admin_note: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    cancellation_reason: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
 
     dispute_reason: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
     )
 
+    disputed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    dispute_resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     # =========================================================
-    # TIMESTAMPS
+    # REGLEMENT
+    # =========================================================
+
+    seller_paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    nexmarket_fee_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    # Référence du règlement vendeur.
+    seller_payout_reference: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    # =========================================================
+    # ANNULATION / REMBOURSEMENT
+    # =========================================================
+
+    cancelled_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    refunded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    refund_reference: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+        index=True,
+    )
+
+    # =========================================================
+    # NOTES INTERNES
+    # =========================================================
+
+    admin_notes: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    # =========================================================
+    # DATES
     # =========================================================
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         nullable=False,
     )
 
-    payment_confirmed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    assigned_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
         nullable=False,
     )
 
     # =========================================================
-    # RELATIONSHIPS
+    # RELATIONS
     # =========================================================
 
     listing = relationship(
@@ -231,13 +314,13 @@ class Transaction(Base):
     buyer = relationship(
         "User",
         foreign_keys=[buyer_id],
-        back_populates="transactions_as_buyer",
+        back_populates="buyer_transactions",
     )
 
     seller = relationship(
         "User",
         foreign_keys=[seller_id],
-        back_populates="transactions_as_seller",
+        back_populates="seller_transactions",
     )
 
     assigned_admin = relationship(
@@ -249,13 +332,9 @@ class Transaction(Base):
         "Message",
         back_populates="transaction",
         cascade="all, delete-orphan",
-        order_by="Message.created_at.asc()",
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<Transaction "
-            f"id={self.id} "
-            f"reference={self.reference!r} "
-            f"status={self.status!r}>"
-        )
+    reports = relationship(
+        "Report",
+        back_populates="transaction",
+    )
