@@ -1,9 +1,14 @@
-# backend/app/models/listing.py
-
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -13,28 +18,37 @@ class Listing(Base):
     __tablename__ = "listings"
 
     # =========================================================
-    # IDENTIFICATION
+    # IDENTIFIANT
     # =========================================================
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
 
-    channel_id: Mapped[int] = mapped_column(
-        ForeignKey("channels.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    # =========================================================
+    # CANAL
+    # =========================================================
 
-    seller_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+    channel_id: Mapped[int] = mapped_column(
+        ForeignKey("channels.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
 
     # =========================================================
-    # SALE INFORMATION
+    # VENDEUR
+    # =========================================================
+
+    seller_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # =========================================================
+    # PRIX
     # =========================================================
 
     price: Mapped[Decimal] = mapped_column(
@@ -42,9 +56,26 @@ class Listing(Base):
         nullable=False,
     )
 
+    # La monnaie est choisie par le vendeur pour CETTE annonce.
+    #
+    # Exemple :
+    #   50000 XAF
+    #   100 USD
+    #   70000 XOF
+    #
+    # Elle n'est pas déterminée par le profil utilisateur.
     currency: Mapped[str] = mapped_column(
         String(10),
-        default="XAF",
+        nullable=False,
+        index=True,
+    )
+
+    # =========================================================
+    # CONTENU PUBLIC
+    # =========================================================
+
+    title: Mapped[str] = mapped_column(
+        String(255),
         nullable=False,
     )
 
@@ -53,97 +84,101 @@ class Listing(Base):
         nullable=True,
     )
 
+    category: Mapped[str | None] = mapped_column(
+        String(100),
+        nullable=True,
+        index=True,
+    )
+
     # =========================================================
-    # STATUS
+    # STATUT DE L'ANNONCE
     # =========================================================
-    #
-    # pending   = en attente de validation admin
-    # available = publié et disponible
-    # reserved  = prix/fonds bloqués pour une transaction
-    # sold      = vendu
-    # rejected  = refusé par l'administration
-    # cancelled = annonce annulée
-    # archived  = ancienne annonce
-    #
 
     status: Mapped[str] = mapped_column(
-        String(30),
-        default="pending",
+        String(40),
+        default="draft",
         nullable=False,
         index=True,
     )
+
+    # draft
+    # pending_review
+    # approved
+    # rejected
+    # published
+    # reserved
+    # sold
+    # suspended
+    # cancelled
 
     # =========================================================
     # MODERATION
     # =========================================================
 
-    admin_note: Mapped[str | None] = mapped_column(
+    reviewed_by_admin_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    reviewed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    rejection_reason: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,
     )
 
-    validated_by_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
+    # =========================================================
+    # COMMISSION
+    # =========================================================
+
+    # Taux utilisé au moment de la vente.
+    #
+    # On le conserve dans la transaction finale également afin
+    # qu'une modification future de la commission ne change
+    # pas rétroactivement les anciennes ventes.
+    platform_fee_rate: Mapped[Decimal] = mapped_column(
+        Numeric(8, 6),
+        default=Decimal("0.050000"),
+        nullable=False,
+    )
+
+    # =========================================================
+    # VISIBILITE
+    # =========================================================
+
+    is_public: Mapped[bool] = mapped_column(
+        default=False,
+        nullable=False,
         index=True,
     )
 
-    validated_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
     # =========================================================
-    # PRICE LOCK
-    # =========================================================
-
-    # Lorsque l'annonce est utilisée dans une transaction,
-    # le prix accepté doit rester verrouillé.
-
-    locked_price: Mapped[Decimal | None] = mapped_column(
-        Numeric(18, 2),
-        nullable=True,
-    )
-
-    locked_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    # =========================================================
-    # PUBLISHING FEE
-    # =========================================================
-
-    publish_fee: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2),
-        default=Decimal("0.00"),
-        nullable=False,
-    )
-
-    publish_fee_paid: Mapped[bool] = mapped_column(
-        default=False,
-        nullable=False,
-    )
-
-    # =========================================================
-    # TIMESTAMPS
+    # DATES
     # =========================================================
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
         nullable=False,
     )
 
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     # =========================================================
-    # RELATIONSHIPS
+    # RELATIONS
     # =========================================================
 
     channel = relationship(
@@ -154,35 +189,15 @@ class Listing(Base):
     seller = relationship(
         "User",
         foreign_keys=[seller_id],
+        back_populates="listings",
     )
 
-    validated_by = relationship(
+    reviewed_by_admin = relationship(
         "User",
-        foreign_keys=[validated_by_id],
+        foreign_keys=[reviewed_by_admin_id],
     )
 
     transactions = relationship(
         "Transaction",
         back_populates="listing",
     )
-
-    favorites = relationship(
-        "Favorite",
-        back_populates="listing",
-        cascade="all, delete-orphan",
-    )
-
-    reports = relationship(
-        "Report",
-        back_populates="listing",
-        cascade="all, delete-orphan",
-    )
-
-    def __repr__(self) -> str:
-        return (
-            f"<Listing id={self.id} "
-            f"channel_id={self.channel_id} "
-            f"seller_id={self.seller_id} "
-            f"price={self.price} "
-            f"status={self.status!r}>"
-        )
