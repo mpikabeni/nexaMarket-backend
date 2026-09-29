@@ -1,52 +1,59 @@
-# backend/app/models/platform.py
-
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, Numeric, String, Text
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy import (
+    DateTime,
+    ForeignKey,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+)
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
 
 
 class PlatformWallet(Base):
-    """
-    Portefeuille interne de NexMarket.
-
-    Il est séparé des wallets des utilisateurs.
-    Il reçoit notamment la commission NexMarket.
-    """
-
-    __tablename__ = "platform_wallet"
-
-    # =========================================================
-    # IDENTIFICATION
-    # =========================================================
+    __tablename__ = "platform_wallets"
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
 
-    # =========================================================
-    # BALANCE
-    # =========================================================
+    # Exemple : XAF, XOF, USD, EUR
+    currency: Mapped[str] = mapped_column(
+        String(10),
+        nullable=False,
+        index=True,
+    )
 
-    balance: Mapped[Decimal] = mapped_column(
+    available_balance: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         default=Decimal("0.00"),
         nullable=False,
     )
 
-    currency: Mapped[str] = mapped_column(
-        String(10),
-        default="XAF",
+    blocked_balance: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2),
+        default=Decimal("0.00"),
         nullable=False,
     )
 
-    # =========================================================
-    # TIMESTAMP
-    # =========================================================
+    total_revenue: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2),
+        default=Decimal("0.00"),
+        nullable=False,
+    )
+
+    total_fees_collected: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2),
+        default=Decimal("0.00"),
+        nullable=False,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
@@ -61,51 +68,49 @@ class PlatformWallet(Base):
         nullable=False,
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<PlatformWallet "
-            f"id={self.id} "
-            f"balance={self.balance}>"
-        )
+    ledger_entries = relationship(
+        "PlatformLedger",
+        back_populates="wallet",
+        cascade="all, delete-orphan",
+    )
 
 
 class PlatformLedger(Base):
-    """
-    Journal financier de NexMarket.
-
-    Chaque mouvement de la plateforme est enregistré ici :
-    - commission sur une vente
-    - frais éventuels
-    - remboursement de commission
-    - ajustement administratif
-    """
-
     __tablename__ = "platform_ledger"
 
-    # =========================================================
-    # IDENTIFICATION
-    # =========================================================
+    __table_args__ = (
+        UniqueConstraint(
+            "reference",
+            name="uq_platform_ledger_reference",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
 
-    reference: Mapped[str] = mapped_column(
-        String(100),
-        unique=True,
+    wallet_id: Mapped[int] = mapped_column(
+        ForeignKey("platform_wallets.id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
 
-    # =========================================================
-    # OPERATION
-    # =========================================================
+    transaction_id: Mapped[int | None] = mapped_column(
+        ForeignKey("transactions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
+    reference: Mapped[str] = mapped_column(
+        String(120),
+        nullable=False,
+    )
 
     operation_type: Mapped[str] = mapped_column(
         String(50),
         nullable=False,
-        index=True,
     )
 
     amount: Mapped[Decimal] = mapped_column(
@@ -115,13 +120,6 @@ class PlatformLedger(Base):
 
     currency: Mapped[str] = mapped_column(
         String(10),
-        default="XAF",
-        nullable=False,
-    )
-
-    # Crédit ou débit
-    direction: Mapped[str] = mapped_column(
-        String(10),
         nullable=False,
     )
 
@@ -130,31 +128,17 @@ class PlatformLedger(Base):
         nullable=True,
     )
 
-    # =========================================================
-    # TRANSACTION ASSOCIATED
-    # =========================================================
-
-    transaction_id: Mapped[int | None] = mapped_column(
-        nullable=True,
-        index=True,
-    )
-
-    # =========================================================
-    # TIMESTAMP
-    # =========================================================
-
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
         nullable=False,
-        index=True,
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<PlatformLedger "
-            f"id={self.id} "
-            f"reference={self.reference!r} "
-            f"direction={self.direction!r} "
-            f"amount={self.amount}>"
-        )
+    wallet = relationship(
+        "PlatformWallet",
+        back_populates="ledger_entries",
+    )
+
+    transaction = relationship(
+        "Transaction",
+    )
