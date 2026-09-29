@@ -40,3 +40,6 @@ python-telegram-bot==22.8
 # FILE UPLOADS
 # -------------------------
 python-multipart==0.0.20
+
+
+asyncpg==0.30.0
