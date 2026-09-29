@@ -1,8 +1,6 @@
-# backend/app/models/favorite.py
-
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Integer, UniqueConstraint
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -11,11 +9,16 @@ from app.db import Base
 class Favorite(Base):
     __tablename__ = "favorites"
 
-    # =========================================================
-    # IDENTIFICATION
-    # =========================================================
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "listing_id",
+            name="uq_favorite_user_listing",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
@@ -32,35 +35,11 @@ class Favorite(Base):
         index=True,
     )
 
-    # =========================================================
-    # TIMESTAMP
-    # =========================================================
-
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow,
         nullable=False,
     )
-
-    # =========================================================
-    # CONTRAINTE
-    # =========================================================
-    #
-    # Un utilisateur ne peut ajouter deux fois
-    # la même annonce à ses favoris.
-    #
-
-    __table_args__ = (
-        UniqueConstraint(
-            "user_id",
-            "listing_id",
-            name="uq_user_listing_favorite",
-        ),
-    )
-
-    # =========================================================
-    # RELATIONSHIPS
-    # =========================================================
 
     user = relationship(
         "User",
@@ -71,11 +50,3 @@ class Favorite(Base):
         "Listing",
         back_populates="favorites",
     )
-
-    def __repr__(self) -> str:
-        return (
-            f"<Favorite "
-            f"id={self.id} "
-            f"user_id={self.user_id} "
-            f"listing_id={self.listing_id}>"
-        )
