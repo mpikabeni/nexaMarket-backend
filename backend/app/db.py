@@ -1,58 +1,69 @@
-# backend/app/db.py
+from collections.abc import AsyncGenerator
 
-from collections.abc import Generator
-
-from sqlalchemy import create_engine
-from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
+from sqlalchemy.ext.asyncio import (
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
+)
+from sqlalchemy.orm import DeclarativeBase
 
 from app.config import settings
 
 
-# =========================================================
-# DATABASE URL
-# =========================================================
+def normalize_database_url(url: str) -> str:
+    """
+    Convertit une URL PostgreSQL classique vers asyncpg.
+    """
 
-DATABASE_URL = settings.DATABASE_URL
+    if url.startswith("postgresql+asyncpg://"):
+        return url
 
-# Render/PostgreSQL peut fournir une URL commençant par
-# postgres://. SQLAlchemy moderne utilise postgresql+psycopg://.
-if DATABASE_URL.startswith("postgres://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgres://",
-        "postgresql+psycopg://",
-        1,
-    )
+    if url.startswith("postgresql+psycopg://"):
+        return url.replace(
+            "postgresql+psycopg://",
+            "postgresql+asyncpg://",
+            1,
+        )
 
-elif DATABASE_URL.startswith("postgresql://"):
-    DATABASE_URL = DATABASE_URL.replace(
-        "postgresql://",
-        "postgresql+psycopg://",
-        1,
-    )
+    if url.startswith("postgresql://"):
+        return url.replace(
+            "postgresql://",
+            "postgresql+asyncpg://",
+            1,
+        )
+
+    return url
 
 
-# =========================================================
-# ENGINE
-# =========================================================
-
-engine = create_engine(
-    DATABASE_URL,
-    pool_pre_ping=True,
-    pool_recycle=1800,
-    future=True,
+DATABASE_URL = normalize_database_url(
+    settings.DATABASE_URL
 )
 
 
 # =========================================================
-# SESSION
+# SQLALCHEMY ENGINE
 # =========================================================
 
-SessionLocal = sessionmaker(
+engine = create_async_engine(
+    DATABASE_URL,
+    echo=False,
+    pool_pre_ping=True,
+    pool_recycle=1800,
+    pool_size=10,
+    max_overflow=20,
+)
+
+
+# =========================================================
+# SESSION FACTORY
+# =========================================================
+
+AsyncSessionLocal = async_sessionmaker(
     bind=engine,
-    class_=Session,
-    autocommit=False,
-    autoflush=False,
+    class_=AsyncSession,
     expire_on_commit=False,
+    autoflush=False,
+    autocommit=False,
 )
 
 
@@ -68,59 +79,70 @@ class Base(DeclarativeBase):
 # DATABASE DEPENDENCY
 # =========================================================
 
-def get_db() -> Generator[Session, None, None]:
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
     """
-    Fournit une session PostgreSQL à chaque requête FastAPI.
-    La session est automatiquement fermée à la fin de la requête.
+    Fournit une session PostgreSQL à chaque requête.
+
+    En cas d'erreur, la transaction est annulée.
     """
 
-    db = SessionLocal()
-
-    try:
-        yield db
-
-    finally:
-        db.close()
+    async with AsyncSessionLocal() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
 
 
 # =========================================================
 # INITIALISATION
 # =========================================================
 
-def init_db() -> None:
+async def init_db() -> None:
     """
-    Crée les tables définies dans les modèles.
+    Initialise les tables connues par SQLAlchemy.
 
-    Cette fonction est surtout utile pour le premier déploiement.
+    Les imports ci-dessous sont volontairement effectués
+    avant create_all afin d'enregistrer les modèles.
     """
 
-    # Les imports doivent être faits ici afin que SQLAlchemy
-    # connaisse tous les modèles avant create_all().
-    from app.models.user import User
-    from app.models.channel import Channel
-    from app.models.listing import Listing
-    from app.models.wallet import Wallet
-    from app.models.transaction import Transaction
-    from app.models.message import Message
-    from app.models.favorite import Favorite
-    from app.models.review import Review
-    from app.models.report import Report
-    from app.models.plateform import PlatformWallet, PlatformLedger
+    from app.models import channel
+    from app.models import favorite
+    from app.models import listing
+    from app.models import message
+    from app.models import plateform
+    from app.models import report
+    from app.models import review
+    from app.models import transaction
+    from app.models import user
+    from app.models import wallet
 
-    # Évite les avertissements de linters concernant les imports
-    # utilisés uniquement pour enregistrer les modèles.
     _ = (
-        User,
-        Channel,
-        Listing,
-        Wallet,
-        Transaction,
-        Message,
-        Favorite,
-        Review,
-        Report,
-        PlatformWallet,
-        PlatformLedger,
+        channel,
+        favorite,
+        listing,
+        message,
+        plateform,
+        report,
+        review,
+        transaction,
+        user,
+        wallet,
     )
 
-    Base.metadata.create_all(bind=engine)
+    async with engine.begin() as connection:
+        await connection.run_sync(
+            Base.metadata.create_all
+        )
+
+
+# =========================================================
+# FERMETURE
+# =========================================================
+
+async def close_db() -> None:
+    """
+    Ferme proprement le pool de connexions.
+    """
+
+    await engine.dispose()
