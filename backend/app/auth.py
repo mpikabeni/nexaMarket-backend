@@ -1,79 +1,97 @@
-# backend/app/auth.py
-
 import hashlib
 import hmac
 import json
 import time
+from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qsl
 
+import jwt
 from fastapi import HTTPException, status
 
 from app.config import settings
 
 
-# =========================================================
-# TELEGRAM INIT DATA
-# =========================================================
+# ============================================================
+# TELEGRAM MINI APP AUTH
+# ============================================================
 
 def validate_telegram_init_data(
     init_data: str,
-    max_age: int = 86400,
 ) -> dict:
     """
-    Vérifie cryptographiquement le initData fourni par Telegram
+    Vérifie les données initData envoyées par Telegram
     lors de l'ouverture de la Mini App.
 
-    Telegram utilise :
+    Telegram signe les données avec le bot token.
 
-        secret_key = HMAC_SHA256("WebAppData", bot_token)
-
-    puis :
-
-        hash = HMAC_SHA256(secret_key, data_check_string)
-
-    Retourne les données Telegram vérifiées.
+    Retourne les données utilisateur décodées si la
+    signature est valide.
     """
 
     if not init_data:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Telegram initData manquant.",
-        )
-
-    if not settings.TELEGRAM_BOT_TOKEN:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Telegram bot token non configuré.",
+            detail="Données Telegram manquantes.",
         )
 
     try:
         parsed = dict(parse_qsl(init_data, keep_blank_values=True))
-    except Exception as exc:
+    except Exception:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Telegram initData invalide.",
-        ) from exc
+            detail="Données Telegram invalides.",
+        )
 
     received_hash = parsed.pop("hash", None)
 
     if not received_hash:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Hash Telegram manquant.",
+            detail="Signature Telegram manquante.",
         )
 
-    # =====================================================
-    # CHECK DATA
-    # =====================================================
+    auth_date_raw = parsed.get("auth_date")
+
+    if not auth_date_raw:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Date d'authentification Telegram manquante.",
+        )
+
+    try:
+        auth_date = int(auth_date_raw)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Date Telegram invalide.",
+        )
+
+    current_timestamp = int(time.time())
+
+    if current_timestamp - auth_date > settings.TELEGRAM_AUTH_MAX_AGE_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session Telegram expirée.",
+        )
+
+    if auth_date > current_timestamp + 60:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Date Telegram invalide.",
+        )
+
+    # --------------------------------------------------------
+    # Création du data-check-string Telegram
+    # --------------------------------------------------------
 
     data_check_string = "\n".join(
         f"{key}={value}"
         for key, value in sorted(parsed.items())
     )
 
-    # =====================================================
-    # SECRET KEY
-    # =====================================================
+    # --------------------------------------------------------
+    # Secret key Telegram
+    # --------------------------------------------------------
 
     secret_key = hmac.new(
         b"WebAppData",
@@ -81,109 +99,39 @@ def validate_telegram_init_data(
         hashlib.sha256,
     ).digest()
 
-    # =====================================================
-    # EXPECTED HASH
-    # =====================================================
-
-    expected_hash = hmac.new(
+    calculated_hash = hmac.new(
         secret_key,
         data_check_string.encode("utf-8"),
         hashlib.sha256,
     ).hexdigest()
 
-    # Comparaison résistante au timing attack
     if not hmac.compare_digest(
-        expected_hash,
+        calculated_hash,
         received_hash,
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentification Telegram invalide.",
+            detail="Signature Telegram invalide.",
         )
 
-    # =====================================================
-    # AUTH_DATE
-    # =====================================================
+    # --------------------------------------------------------
+    # Récupération des données utilisateur
+    # --------------------------------------------------------
 
-    auth_date_raw = parsed.get("auth_date")
+    user_raw = parsed.get("user")
 
-    if not auth_date_raw:
+    if not user_raw:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="auth_date Telegram manquant.",
+            detail="Utilisateur Telegram manquant.",
         )
 
     try:
-        auth_date = int(auth_date_raw)
-    except ValueError as exc:
+        telegram_user = json.loads(user_raw)
+    except json.JSONDecodeError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="auth_date Telegram invalide.",
-        ) from exc
-
-    current_time = int(time.time())
-
-    # Protection contre un initData trop ancien
-    if current_time - auth_date > max_age:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Telegram initData expiré.",
-        )
-
-    # Protection basique contre une date future anormale
-    if auth_date - current_time > 60:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Date Telegram invalide.",
-        )
-
-    # =====================================================
-    # CONVERT JSON FIELDS
-    # =====================================================
-
-    if "user" in parsed:
-        try:
-            parsed["user"] = json.loads(parsed["user"])
-        except json.JSONDecodeError:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Données utilisateur Telegram invalides.",
-            )
-
-    if "receiver" in parsed:
-        try:
-            parsed["receiver"] = json.loads(parsed["receiver"])
-        except json.JSONDecodeError:
-            pass
-
-    return parsed
-
-
-# =========================================================
-# TELEGRAM USER
-# =========================================================
-
-def get_telegram_user_from_init_data(
-    init_data: str,
-) -> dict:
-    """
-    Vérifie initData puis récupère l'utilisateur Telegram.
-    """
-
-    data = validate_telegram_init_data(init_data)
-
-    telegram_user = data.get("user")
-
-    if not telegram_user:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utilisateur Telegram introuvable.",
-        )
-
-    if not isinstance(telegram_user, dict):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Utilisateur Telegram invalide.",
+            detail="Données utilisateur Telegram invalides.",
         )
 
     telegram_id = telegram_user.get("id")
@@ -194,26 +142,42 @@ def get_telegram_user_from_init_data(
             detail="Identifiant Telegram manquant.",
         )
 
-    return telegram_user
+    return {
+        "telegram_id": int(telegram_id),
+        "username": telegram_user.get("username"),
+        "first_name": telegram_user.get("first_name"),
+        "last_name": telegram_user.get("last_name"),
+        "photo_url": telegram_user.get("photo_url"),
+        "auth_date": auth_date,
+        "query_id": parsed.get("query_id"),
+    }
 
 
-# =========================================================
-# TELEGRAM ID
-# =========================================================
+# ============================================================
+# JWT
+# ============================================================
 
-def get_telegram_id_from_init_data(
-    init_data: str,
-) -> int:
+def create_access_token(
+    user_id: int,
+) -> str:
     """
-    Retourne uniquement le Telegram ID après vérification.
+    Crée le JWT utilisé par le frontend pour les requêtes API.
     """
 
-    user = get_telegram_user_from_init_data(init_data)
+    now = datetime.now(timezone.utc)
 
-    try:
-        return int(user["id"])
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Telegram ID invalide.",
-        ) from exc
+    expires_at = now + timedelta(
+        minutes=settings.JWT_EXPIRE_MINUTES
+    )
+
+    payload = {
+        "sub": str(user_id),
+        "iat": now,
+        "exp": expires_at,
+    }
+
+    return jwt.encode(
+        payload,
+        settings.JWT_SECRET,
+        algorithm=settings.JWT_ALGORITHM,
+    )
