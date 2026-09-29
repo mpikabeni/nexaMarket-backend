@@ -1,8 +1,14 @@
-# backend/app/models/channel.py
-
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -12,35 +18,40 @@ class Channel(Base):
     __tablename__ = "channels"
 
     # =========================================================
-    # IDENTIFICATION
+    # IDENTIFIANT
     # =========================================================
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
 
-    telegram_chat_id: Mapped[int | None] = mapped_column(
+    # =========================================================
+    # TELEGRAM CHANNEL
+    # =========================================================
+
+    telegram_channel_id: Mapped[int] = mapped_column(
         BigInteger,
         unique=True,
-        nullable=True,
-        index=True,
-    )
-
-    # =========================================================
-    # CHANNEL INFORMATION
-    # =========================================================
-
-    title: Mapped[str] = mapped_column(
-        String(255),
         nullable=False,
         index=True,
     )
 
-    username: Mapped[str | None] = mapped_column(
+    telegram_username: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
         index=True,
+    )
+
+    title: Mapped[str] = mapped_column(
+        String(255),
+        nullable=False,
+    )
+
+    photo_url: Mapped[str | None] = mapped_column(
+        String(1000),
+        nullable=True,
     )
 
     description: Mapped[str | None] = mapped_column(
@@ -48,87 +59,91 @@ class Channel(Base):
         nullable=True,
     )
 
-    photo_url: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    # =========================================================
-    # CLASSIFICATION
-    # =========================================================
-
-    category: Mapped[str] = mapped_column(
-        String(100),
-        nullable=False,
-        index=True,
-    )
-
-    country: Mapped[str] = mapped_column(
-        String(100),
-        nullable=False,
-        index=True,
-    )
-
-    language: Mapped[str] = mapped_column(
-        String(50),
-        nullable=False,
-        index=True,
-    )
-
-    # =========================================================
-    # TELEGRAM STATISTICS
-    # =========================================================
-
-    subscribers_count: Mapped[int] = mapped_column(
+    subscriber_count: Mapped[int] = mapped_column(
         Integer,
         default=0,
         nullable=False,
+    )
+
+    # =========================================================
+    # PROPRIETAIRE NEXAMARKET
+    # =========================================================
+
+    owner_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # ID Telegram du propriétaire vérifié.
+    #
+    # Ce champ reste strictement interne.
+    # Il ne doit jamais être envoyé dans une annonce publique.
+    owner_telegram_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
         index=True,
     )
 
     # =========================================================
-    # VERIFICATION
+    # VERIFICATION TELEGRAM
     # =========================================================
 
-    telegram_verified: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-    )
-
+    # Le bot NexMarket est-il administrateur ?
     bot_is_admin: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         nullable=False,
     )
 
-    seller_is_admin: Mapped[bool] = mapped_column(
+    # Le bot possède-t-il les droits nécessaires ?
+    bot_permissions_verified: Mapped[bool] = mapped_column(
         Boolean,
         default=False,
         nullable=False,
     )
 
-    verification_note: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    verified_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
+    # Le vendeur est-il réellement creator/propriétaire ?
+    owner_verified: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
     )
 
     # =========================================================
-    # OWNER
+    # VERIFICATION NEXAMARKET
     # =========================================================
 
-    owner_id: Mapped[int] = mapped_column(
+    verification_status: Mapped[str] = mapped_column(
+        String(40),
+        default="pending",
         nullable=False,
         index=True,
     )
 
+    # pending
+    # submitted
+    # approved
+    # rejected
+    # suspended
+
+    verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    verified_by_admin_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    rejection_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     # =========================================================
-    # STATUS
+    # ETAT DU CANAL
     # =========================================================
 
     is_active: Mapped[bool] = mapped_column(
@@ -137,43 +152,46 @@ class Channel(Base):
         nullable=False,
     )
 
+    is_listed: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+        index=True,
+    )
+
     # =========================================================
-    # TIMESTAMPS
+    # DATES
     # =========================================================
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
         nullable=False,
     )
 
     # =========================================================
-    # RELATIONSHIPS
+    # RELATIONS
     # =========================================================
 
     owner = relationship(
         "User",
-        back_populates="channels",
-        primaryjoin="Channel.owner_id == User.id",
         foreign_keys=[owner_id],
+        back_populates="channels",
+    )
+
+    verified_by_admin = relationship(
+        "User",
+        foreign_keys=[verified_by_admin_id],
     )
 
     listings = relationship(
         "Listing",
         back_populates="channel",
-        cascade="all, delete-orphan",
     )
-
-    def __repr__(self) -> str:
-        return (
-            f"<Channel id={self.id} "
-            f"title={self.title!r} "
-            f"username={self.username!r}>"
-        )
