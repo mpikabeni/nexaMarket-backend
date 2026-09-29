@@ -1,8 +1,6 @@
-# backend/app/models/report.py
-
 from datetime import datetime
 
-from sqlalchemy import DateTime, ForeignKey, String, Text
+from sqlalchemy import DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -11,12 +9,11 @@ from app.db import Base
 class Report(Base):
     __tablename__ = "reports"
 
-    # =========================================================
-    # IDENTIFICATION
-    # =========================================================
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, index=True)
 
-    id: Mapped[int] = mapped_column(
-        primary_key=True,
+    transaction_id: Mapped[int] = mapped_column(
+        ForeignKey("transactions.id", ondelete="CASCADE"),
+        nullable=False,
         index=True,
     )
 
@@ -26,68 +23,38 @@ class Report(Base):
         index=True,
     )
 
-    listing_id: Mapped[int | None] = mapped_column(
-        ForeignKey("listings.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
+    # Type de problème signalé
+    report_type: Mapped[str] = mapped_column(
+        String(50),
+        nullable=False,
+        default="other",
     )
 
-    transaction_id: Mapped[int | None] = mapped_column(
-        ForeignKey("transactions.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-
-    # =========================================================
-    # REPORT
-    # =========================================================
-
+    # Description fournie par l'utilisateur
     reason: Mapped[str] = mapped_column(
-        String(100),
+        Text,
         nullable=False,
     )
 
-    description: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    # =========================================================
-    # ADMIN STATUS
-    # =========================================================
-    #
-    # pending
-    # reviewing
-    # resolved
-    # rejected
-    #
-
+    # pending / reviewing / resolved / rejected
     status: Mapped[str] = mapped_column(
         String(30),
-        default="pending",
         nullable=False,
+        default="pending",
         index=True,
     )
 
-    admin_note: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    resolved_by_id: Mapped[int | None] = mapped_column(
+    # Admin responsable du traitement
+    assigned_admin_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )
 
-    # =========================================================
-    # TIMESTAMPS
-    # =========================================================
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        nullable=False,
+    # Réponse/décision de l'administration
+    admin_resolution: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
     )
 
     resolved_at: Mapped[datetime | None] = mapped_column(
@@ -95,34 +62,31 @@ class Report(Base):
         nullable=True,
     )
 
-    # =========================================================
-    # RELATIONSHIPS
-    # =========================================================
-
-    reporter = relationship(
-        "User",
-        foreign_keys=[reporter_id],
-        back_populates="reports_created",
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        nullable=False,
     )
 
-    listing = relationship(
-        "Listing",
-        back_populates="reports",
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
     )
 
     transaction = relationship(
         "Transaction",
+        back_populates="reports",
     )
 
-    resolved_by = relationship(
+    reporter = relationship(
         "User",
-        foreign_keys=[resolved_by_id],
+        foreign_keys=[reporter_id],
+        back_populates="reports",
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<Report "
-            f"id={self.id} "
-            f"status={self.status!r} "
-            f"reason={self.reason!r}>"
-        )
+    assigned_admin = relationship(
+        "User",
+        foreign_keys=[assigned_admin_id],
+    )
