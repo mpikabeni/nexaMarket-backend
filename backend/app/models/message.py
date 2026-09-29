@@ -1,8 +1,14 @@
-# backend/app/models/message.py
-
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, String, Text
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -12,28 +18,58 @@ class Message(Base):
     __tablename__ = "messages"
 
     # =========================================================
-    # IDENTIFICATION
+    # IDENTIFIANT
     # =========================================================
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
 
-    transaction_id: Mapped[int] = mapped_column(
-        ForeignKey("transactions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
+    # =========================================================
+    # TRANSACTION
+    # =========================================================
 
-    sender_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="CASCADE"),
+    transaction_id: Mapped[int] = mapped_column(
+        ForeignKey("transactions.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
     )
 
     # =========================================================
-    # MESSAGE
+    # EXPEDITEUR
+    # =========================================================
+
+    sender_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+        index=True,
+    )
+
+    # ID Telegram conservé pour l'audit.
+    # Il reste une donnée interne.
+    sender_telegram_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    # =========================================================
+    # ROLE AU MOMENT DU MESSAGE
+    # =========================================================
+
+    sender_role: Mapped[str] = mapped_column(
+        String(20),
+        nullable=False,
+        index=True,
+    )
+
+    # buyer
+    # seller
+    # admin
+
+    # =========================================================
+    # CONTENU
     # =========================================================
 
     content: Mapped[str] = mapped_column(
@@ -41,29 +77,37 @@ class Message(Base):
         nullable=False,
     )
 
-    # text / image / document / system
+    # =========================================================
+    # TYPE
+    # =========================================================
+
     message_type: Mapped[str] = mapped_column(
         String(30),
         default="text",
         nullable=False,
     )
 
+    # text
+    # image
+    # document
+    # system
+
     # =========================================================
-    # MEDIA
+    # PIECE JOINTE
     # =========================================================
 
-    media_url: Mapped[str | None] = mapped_column(
-        Text,
+    attachment_url: Mapped[str | None] = mapped_column(
+        String(2000),
         nullable=True,
     )
 
-    media_type: Mapped[str | None] = mapped_column(
-        String(50),
+    attachment_file_id: Mapped[str | None] = mapped_column(
+        String(500),
         nullable=True,
     )
 
     # =========================================================
-    # SYSTEM MESSAGE
+    # MESSAGE SYSTEME
     # =========================================================
 
     is_system_message: Mapped[bool] = mapped_column(
@@ -73,7 +117,7 @@ class Message(Base):
     )
 
     # =========================================================
-    # READ STATUS
+    # LECTURE
     # =========================================================
 
     is_read: Mapped[bool] = mapped_column(
@@ -82,19 +126,53 @@ class Message(Base):
         nullable=False,
     )
 
+    read_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     # =========================================================
-    # TIMESTAMP
+    # MODERATION / AUDIT
+    # =========================================================
+
+    # Un message financier ou important ne doit pas pouvoir
+    # disparaître silencieusement.
+    is_deleted: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    deleted_by_admin_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    # =========================================================
+    # DATES
     # =========================================================
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         nullable=False,
         index=True,
     )
 
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
+
     # =========================================================
-    # RELATIONSHIPS
+    # RELATIONS
     # =========================================================
 
     transaction = relationship(
@@ -104,13 +182,11 @@ class Message(Base):
 
     sender = relationship(
         "User",
+        foreign_keys=[sender_id],
         back_populates="messages",
     )
 
-    def __repr__(self) -> str:
-        return (
-            f"<Message "
-            f"id={self.id} "
-            f"transaction_id={self.transaction_id} "
-            f"sender_id={self.sender_id}>"
-        )
+    deleted_by_admin = relationship(
+        "User",
+        foreign_keys=[deleted_by_admin_id],
+    )
