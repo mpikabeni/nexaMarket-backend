@@ -1,83 +1,184 @@
-# backend/app/deps.py
+from collections.abc import AsyncGenerator, Callable
+from typing import Annotated
 
-from fastapi import Depends, Header, HTTPException, status
-from sqlalchemy.orm import Session
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import InvalidTokenError, decode
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth import get_telegram_user_from_init_data
+from app.config import settings
 from app.db import get_db
 from app.models.user import User
 
 
-# =========================================================
-# TELEGRAM INIT DATA
-# =========================================================
+# ============================================================
+# DATABASE
+# ============================================================
 
-def get_current_user(
-    x_telegram_init_data: str | None = Header(
-        default=None,
-        alias="X-Telegram-Init-Data",
-    ),
-    db: Session = Depends(get_db),
+DBSession = Annotated[AsyncSession, Depends(get_db)]
+
+
+# ============================================================
+# AUTHENTICATION
+# ============================================================
+
+bearer_scheme = HTTPBearer(
+    auto_error=False,
+)
+
+
+async def get_current_user(
+    db: DBSession,
+    credentials: Annotated[
+        HTTPAuthorizationCredentials | None,
+        Depends(bearer_scheme),
+    ],
 ) -> User:
     """
-    Récupère l'utilisateur actuellement connecté
-    à partir des données authentifiées par Telegram.
+    Récupère l'utilisateur connecté à partir du JWT.
+
+    Le frontend doit envoyer :
+
+        Authorization: Bearer <token>
     """
 
-    if not x_telegram_init_data:
+    if credentials is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Authentification Telegram requise.",
+            detail="Authentification requise.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    telegram_user = get_telegram_user_from_init_data(
-        x_telegram_init_data
-    )
+    token = credentials.credentials
 
-    telegram_id = telegram_user.get("id")
-
-    if not telegram_id:
+    try:
+        payload = decode(
+            token,
+            settings.JWT_SECRET,
+            algorithms=[settings.JWT_ALGORITHM],
+        )
+    except InvalidTokenError:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Identifiant Telegram manquant.",
+            detail="Token invalide ou expiré.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
-    user = (
-        db.query(User)
-        .filter(User.telegram_id == int(telegram_id))
-        .first()
+    user_id = payload.get("sub")
+
+    if not user_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token invalide.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    try:
+        user_id = int(user_id)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Identifiant utilisateur invalide.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    result = await db.execute(
+        select(User).where(
+            User.id == user_id,
+            User.is_active.is_(True),
+        )
     )
 
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Utilisateur NexMarket introuvable.",
-        )
+    user = result.scalar_one_or_none()
 
-    if not user.is_active:
+    if user is None:
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Ce compte NexMarket est désactivé.",
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Utilisateur introuvable ou désactivé.",
+            headers={"WWW-Authenticate": "Bearer"},
         )
 
     return user
 
 
-# =========================================================
-# ADMIN USER
-# =========================================================
+CurrentUser = Annotated[
+    User,
+    Depends(get_current_user),
+]
 
-def require_admin(
-    current_user: User = Depends(get_current_user),
+
+# ============================================================
+# ADMIN
+# ============================================================
+
+async def get_current_admin(
+    current_user: CurrentUser,
 ) -> User:
     """
-    Vérifie que l'utilisateur connecté est administrateur.
+    Autorise uniquement les comptes administrateurs NexMarket.
     """
 
     if not current_user.is_admin:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Accès administrateur requis.",
+        )
+
+    return current_user
+
+
+CurrentAdmin = Annotated[
+    User,
+    Depends(get_current_admin),
+]
+
+
+# ============================================================
+# ADMIN ROLE CHECK
+# ============================================================
+
+def require_admin_role(*allowed_roles: str) -> Callable:
+    """
+    Prépare un contrôle de rôle administrateur.
+
+    Exemple :
+
+        Depends(require_admin_role("super_admin"))
+    """
+
+    async def dependency(
+        current_user: CurrentAdmin,
+    ) -> User:
+        # Pour le moment le modèle User possède uniquement
+        # is_admin. Les rôles détaillés pourront être ajoutés
+        # plus tard sans modifier les routes existantes.
+
+        if not allowed_roles:
+            return current_user
+
+        # Aucun champ role n'existe actuellement dans User.
+        # On ne simule donc pas de rôle qui n'est pas stocké.
+        return current_user
+
+    return dependency
+
+
+# ============================================================
+# ACTIVE USER
+# ============================================================
+
+async def require_active_user(
+    current_user: CurrentUser,
+) -> User:
+    """
+    Vérification explicite qu'un compte est actif.
+    """
+
+    if not current_user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Compte désactivé.",
         )
 
     return current_user
