@@ -1,8 +1,6 @@
-# backend/app/models/user.py
-
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, String, Text
+from sqlalchemy import BigInteger, Boolean, DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
@@ -12,37 +10,29 @@ class User(Base):
     __tablename__ = "users"
 
     # =========================================================
-    # IDENTIFICATION
+    # IDENTIFIANT INTERNE
     # =========================================================
 
     id: Mapped[int] = mapped_column(
+        Integer,
         primary_key=True,
         index=True,
     )
 
+    # =========================================================
+    # TELEGRAM
+    # =========================================================
+
     telegram_id: Mapped[int] = mapped_column(
         BigInteger,
         unique=True,
-        nullable=False,
         index=True,
-    )
-
-    # Identifiant interne NexMarket
-    nexa_id: Mapped[str] = mapped_column(
-        String(50),
-        unique=True,
         nullable=False,
-        index=True,
     )
-
-    # =========================================================
-    # TELEGRAM PROFILE
-    # =========================================================
 
     username: Mapped[str | None] = mapped_column(
         String(255),
         nullable=True,
-        index=True,
     )
 
     first_name: Mapped[str | None] = mapped_column(
@@ -56,12 +46,23 @@ class User(Base):
     )
 
     photo_url: Mapped[str | None] = mapped_column(
-        Text,
+        String(1000),
         nullable=True,
     )
 
     # =========================================================
-    # ACCOUNT
+    # IDENTIFIANT NEXAMARKET
+    # =========================================================
+
+    nexa_id: Mapped[str | None] = mapped_column(
+        String(100),
+        unique=True,
+        index=True,
+        nullable=True,
+    )
+
+    # =========================================================
+    # COMPTE
     # =========================================================
 
     is_active: Mapped[bool] = mapped_column(
@@ -81,36 +82,40 @@ class User(Base):
     # =========================================================
 
     language: Mapped[str] = mapped_column(
-        String(20),
+        String(10),
         default="fr",
         nullable=False,
     )
 
-    currency: Mapped[str] = mapped_column(
+    # Monnaie préférée de l'utilisateur pour l'affichage.
+    #
+    # IMPORTANT :
+    # Cette valeur ne détermine PAS la monnaie d'une annonce.
+    # Chaque Listing possède sa propre currency.
+    preferred_currency: Mapped[str | None] = mapped_column(
         String(10),
-        default="XAF",
-        nullable=False,
+        nullable=True,
     )
 
     # =========================================================
-    # TIMESTAMPS
+    # DATES
     # =========================================================
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         nullable=False,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         default=datetime.utcnow,
         onupdate=datetime.utcnow,
         nullable=False,
     )
 
     # =========================================================
-    # RELATIONSHIPS
+    # RELATIONS
     # =========================================================
 
     wallet = relationship(
@@ -120,19 +125,18 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
-    channels = relationship(
-        "Channel",
-        back_populates="owner",
-        cascade="all, delete-orphan",
+    listings = relationship(
+        "Listing",
+        back_populates="seller",
     )
 
-    transactions_as_buyer = relationship(
+    buyer_transactions = relationship(
         "Transaction",
         foreign_keys="Transaction.buyer_id",
         back_populates="buyer",
     )
 
-    transactions_as_seller = relationship(
+    seller_transactions = relationship(
         "Transaction",
         foreign_keys="Transaction.seller_id",
         back_populates="seller",
@@ -141,7 +145,11 @@ class User(Base):
     messages = relationship(
         "Message",
         back_populates="sender",
-        cascade="all, delete-orphan",
+    )
+
+    channels = relationship(
+        "Channel",
+        back_populates="owner",
     )
 
     favorites = relationship(
@@ -150,21 +158,12 @@ class User(Base):
         cascade="all, delete-orphan",
     )
 
-    reviews_written = relationship(
+    reviews = relationship(
         "Review",
-        foreign_keys="Review.reviewer_id",
-        back_populates="reviewer",
+        back_populates="user",
     )
 
-    reports_created = relationship(
+    reports = relationship(
         "Report",
-        foreign_keys="Report.reporter_id",
         back_populates="reporter",
     )
-
-    def __repr__(self) -> str:
-        return (
-            f"<User id={self.id} "
-            f"telegram_id={self.telegram_id} "
-            f"nexa_id={self.nexa_id}>"
-        )
