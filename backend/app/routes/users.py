@@ -1,12 +1,9 @@
-from __future__ import annotations
+from fastapi import APIRouter, HTTPException
+from sqlalchemy import select
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy.ext.asyncio import AsyncSession
-
-from app.db import get_db
-from app.deps import get_current_user
-from app.models.user import User
-from app.services.wallet_service import wallet_service
+from app.deps import CurrentUser, DBSession
+from app.models.schemas import UserResponse, UserUpdate
+from app.models.wallet import Wallet
 
 
 router = APIRouter(
@@ -15,150 +12,102 @@ router = APIRouter(
 )
 
 
-# =========================================================
-# MON PROFIL
-# =========================================================
-
-@router.get("/me")
+@router.get(
+    "/me",
+    response_model=UserResponse,
+)
 async def get_my_profile(
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUser,
 ):
     """
-    Retourne le profil Telegram/NexMarket de l'utilisateur connecté.
+    Retourne le profil de l'utilisateur connecté.
+
+    Les données sensibles comme is_admin ne sont pas
+    exposées par UserResponse.
     """
 
-    return {
-        "id": current_user.id,
-        "nexa_id": current_user.nexa_id,
-        "telegram_id": current_user.telegram_id,
-        "username": current_user.username,
-        "first_name": current_user.first_name,
-        "last_name": current_user.last_name,
-        "photo_url": current_user.photo_url,
-        "is_admin": current_user.is_admin,
-        "language": current_user.language,
-        "currency": current_user.currency,
-        "is_active": current_user.is_active,
-        "created_at": current_user.created_at,
-    }
+    return current_user
 
 
-# =========================================================
-# MON WALLET
-# =========================================================
+@router.patch(
+    "/me",
+    response_model=UserResponse,
+)
+async def update_my_profile(
+    payload: UserUpdate,
+    current_user: CurrentUser,
+    db: DBSession,
+):
+    """
+    Modifie les informations de profil autorisées.
+    """
 
-@router.get("/me/wallet")
+    if payload.username is not None:
+        current_user.username = payload.username
+
+    if payload.first_name is not None:
+        current_user.first_name = payload.first_name
+
+    if payload.last_name is not None:
+        current_user.last_name = payload.last_name
+
+    if payload.photo_url is not None:
+        current_user.photo_url = payload.photo_url
+
+    if payload.language is not None:
+        current_user.language = payload.language
+
+    if payload.preferred_currency is not None:
+        allowed_currencies = {
+            currency.upper()
+            for currency in settings.get_supported_currencies()
+        }
+
+        currency = payload.preferred_currency.upper()
+
+        if currency not in allowed_currencies:
+            raise HTTPException(
+                status_code=400,
+                detail="Devise non supportée.",
+            )
+
+        current_user.preferred_currency = currency
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return current_user
+
+
+@router.get(
+    "/me/wallet",
+)
 async def get_my_wallet(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: CurrentUser,
+    db: DBSession,
 ):
     """
-    Retourne les soldes du portefeuille.
+    Retourne le wallet de l'utilisateur connecté.
     """
 
-    balance = await wallet_service.get_balance(
-        db=db,
-        user_id=current_user.id,
+    result = await db.execute(
+        select(Wallet).where(
+            Wallet.user_id == current_user.id
+        )
     )
 
-    return balance
+    wallet = result.scalar_one_or_none()
 
-
-# =========================================================
-# MODIFIER LA LANGUE
-# =========================================================
-
-@router.patch("/me/language")
-async def update_language(
-    language: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Modifie la langue du compte.
-
-    Pour le moment :
-    - fr
-    - en
-    """
-
-    language = language.strip().lower()
-
-    if language not in {"fr", "en"}:
+    if wallet is None:
         raise HTTPException(
-            status_code=400,
-            detail="Langue non supportée.",
+            status_code=404,
+            detail="Wallet introuvable.",
         )
 
-    current_user.language = language
-
-    await db.commit()
-    await db.refresh(current_user)
-
     return {
-        "status": "success",
-        "language": current_user.language,
-    }
-
-
-# =========================================================
-# MODIFIER LA DEVISE
-# =========================================================
-
-@router.patch("/me/currency")
-async def update_currency(
-    currency: str,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Modifie la devise préférée.
-
-    NexMarket utilise actuellement XAF.
-    """
-
-    currency = currency.strip().upper()
-
-    if currency != "XAF":
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Cette devise n'est pas encore disponible "
-                "sur NexMarket."
-            ),
-        )
-
-    current_user.currency = currency
-
-    await db.commit()
-    await db.refresh(current_user)
-
-    return {
-        "status": "success",
-        "currency": current_user.currency,
-    }
-
-
-# =========================================================
-# DESACTIVER MON COMPTE
-# =========================================================
-
-@router.post("/me/deactivate")
-async def deactivate_my_account(
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """
-    Désactive le compte NexMarket.
-
-    Le compte Telegram n'est évidemment pas supprimé.
-    """
-
-    current_user.is_active = False
-
-    await db.commit()
-
-    return {
-        "status": "success",
-        "message": "Compte NexMarket désactivé.",
+        "id": wallet.id,
+        "available_balance": wallet.available_balance,
+        "blocked_balance": wallet.blocked_balance,
+        "total_revenue": wallet.total_revenue,
+        "currency": wallet.currency,
     }
