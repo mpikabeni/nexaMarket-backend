@@ -110,7 +110,7 @@ async def init_db() -> None:
     from app.models import favorite
     from app.models import listing
     from app.models import message
-    from app.models import plateform
+    from app.models import platform
     from app.models import report
     from app.models import review
     from app.models import transaction
