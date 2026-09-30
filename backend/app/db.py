@@ -122,7 +122,7 @@ async def init_db() -> None:
         favorite,
         listing,
         message,
-        plateform,
+        platform,
         report,
         review,
         transaction,
