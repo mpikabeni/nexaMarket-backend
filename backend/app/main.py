@@ -1,187 +1,158 @@
-# backend/app/main.py
-
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.db import init_db
+from app.db import close_db, init_db
 
 from app.routes import (
+    admin,
     auth,
+    channels,
+    deposits,
+    favorites,
+    listings,
+    messages,
+    reports,
+    reviews,
+    transactions,
     users,
     wallet,
-    channels,
-    listingspy as listings,
-    transaction as transactions,
-    messages,
-    admin,
-    reports,
-    favorites,
+    webhooks,
+    withdrawals,
 )
 
 
-# =========================================================
+# ============================================================
 # LIFESPAN
-# =========================================================
+# ============================================================
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-
-    # Initialisation de la base de données
-    init_db()
+    await init_db()
 
     yield
 
+    await close_db()
 
-# =========================================================
+
+# ============================================================
 # APPLICATION
-# =========================================================
+# ============================================================
+
 
 app = FastAPI(
     title=settings.APP_NAME,
     version=settings.APP_VERSION,
     description=(
-        "API officielle de NexMarket, "
-        "marketplace dédiée aux canaux Telegram."
-    ),
-    docs_url=(
-        "/docs"
-        if settings.ENVIRONMENT != "production"
-        else None
-    ),
-    redoc_url=(
-        "/redoc"
-        if settings.ENVIRONMENT != "production"
-        else None
-    ),
-    openapi_url=(
-        "/openapi.json"
-        if settings.ENVIRONMENT != "production"
-        else None
+        "Backend API de NexMarket, "
+        "marketplace sécurisé pour la vente "
+        "de chaînes Telegram."
     ),
     lifespan=lifespan,
 )
 
 
-# =========================================================
+# ============================================================
 # CORS
-# =========================================================
+# ============================================================
+
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins_list,
+    allow_origins=settings.get_cors_origins(),
     allow_credentials=True,
-    allow_methods=[
-        "GET",
-        "POST",
-        "PUT",
-        "PATCH",
-        "DELETE",
-        "OPTIONS",
-    ],
-    allow_headers=[
-        "Authorization",
-        "Content-Type",
-        "X-Telegram-Init-Data",
-    ],
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-# =========================================================
-# API ROUTES
-# =========================================================
+# ============================================================
+# ROUTERS
+# ============================================================
+
 
 app.include_router(
     auth.router,
-    prefix="/api",
 )
 
 app.include_router(
     users.router,
-    prefix="/api",
 )
 
 app.include_router(
     wallet.router,
-    prefix="/api",
 )
 
 app.include_router(
     channels.router,
-    prefix="/api",
 )
 
 app.include_router(
     listings.router,
-    prefix="/api",
 )
 
 app.include_router(
     transactions.router,
-    prefix="/api",
 )
 
 app.include_router(
     messages.router,
-    prefix="/api",
 )
 
 app.include_router(
-    admin.router,
-    prefix="/api",
-)
-
-app.include_router(
-    reports.router,
-    prefix="/api",
+    reviews.router,
 )
 
 app.include_router(
     favorites.router,
-    prefix="/api",
 )
 
-# =========================================================
+app.include_router(
+    reports.router,
+)
+
+app.include_router(
+    admin.router,
+)
+
+app.include_router(
+    deposits.router,
+)
+
+app.include_router(
+    withdrawals.router,
+)
+
+app.include_router(
+    webhooks.router,
+)
+
+
+# ============================================================
 # ROOT
-# =========================================================
+# ============================================================
+
 
 @app.get("/")
-def root():
-
+async def root():
     return {
-        "app": "NexMarket",
-        "service": "API",
-        "status": "online",
+        "name": settings.APP_NAME,
         "version": settings.APP_VERSION,
+        "status": "online",
     }
 
 
-# =========================================================
-# HEALTH
-# =========================================================
+# ============================================================
+# HEALTH CHECK
+# ============================================================
+
 
 @app.get("/health")
-def health():
-
+async def health():
     return {
         "status": "healthy",
-        "service": "NexMarket API",
-    }
-
-
-@app.get("/api/health")
-def api_health():
-
-    return {
-        "status": "healthy",
-        "service": "NexMarket API",
-        "database": "configured",
-        "telegram": "configured"
-        if settings.TELEGRAM_BOT_TOKEN
-        else "not_configured",
-        "moneyfusion": "configured"
-        if settings.MONEYFUSION_API_URL
-        else "not_configured",
+        "service": settings.APP_NAME,
     }
