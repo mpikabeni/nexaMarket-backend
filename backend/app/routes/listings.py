@@ -1,121 +1,387 @@
+# backend/app/routes/listings.py
+
+from __future__ import annotations
+
+from datetime import datetime
 from decimal import Decimal
 
-from fastapi import APIRouter, HTTPException, Query, status
-from sqlalchemy import select
+import fastapi
+from sqlalchemy import func, or_
+from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.deps import CurrentAdmin, CurrentUser, DBSession
+from app.db import get_db
+from app.deps import get_current_user
 from app.models.channel import Channel
 from app.models.listing import Listing
-from app.models.schemas import (
-    ListingCreate,
-    ListingPublicResponse,
-    ListingUpdate,
-)
+from app.models.user import User
+from app.schemas import ListingCreate, ListingUpdate
 
 
-router = APIRouter(
+router = fastapi.APIRouter(
     prefix="/listings",
     tags=["Listings"],
 )
 
 
 # ============================================================
-# CREATE LISTING
+# OUTIL DE SERIALISATION
 # ============================================================
 
-@router.post(
-    "",
-    response_model=ListingPublicResponse,
-    status_code=status.HTTP_201_CREATED,
-)
-async def create_listing(
-    payload: ListingCreate,
-    current_user: CurrentUser,
-    db: DBSession,
+def listing_to_dict(listing: Listing) -> dict:
+    """Sérialiseur PUBLIC : aucune donnée d'identité vendeur/interne."""
+    channel = listing.channel
+    return {
+        "id": listing.id,
+        "channel_id": listing.channel_id,
+        "price": float(listing.price),
+        "currency": listing.currency,
+        "description": listing.description,
+        "status": listing.status,
+        "created_at": listing.created_at.isoformat() if listing.created_at else None,
+        "updated_at": listing.updated_at.isoformat() if listing.updated_at else None,
+        "channel": ({
+            "id": channel.id,
+            "title": channel.title,
+            "username": channel.username,
+            "description": channel.description,
+            "photo_url": channel.photo_url,
+            "category": channel.category,
+            "language": channel.language,
+            "subscribers_count": channel.subscribers_count,
+            "verified": bool(channel.telegram_verified and channel.bot_is_admin and channel.seller_is_admin),
+            "is_active": channel.is_active,
+        } if channel else None),
+    }
+
+
+# ============================================================
+# LISTINGS PUBLIÉES
+# ============================================================
+
+@router.get("")
+def get_listings(
+    search: str | None = None,
+    category: str | None = None,
+    language: str | None = None,
+    min_price: Decimal | None = None,
+    max_price: Decimal | None = None,
+    min_subscribers: int | None = None,
+    max_subscribers: int | None = None,
+    limit: int = 50,
+    offset: int = 0,
+    db: Session = fastapi.Depends(get_db),
 ):
     """
-    Crée une annonce pour un canal appartenant
-    à l'utilisateur connecté.
+    Retourne les annonces disponibles.
 
-    L'annonce n'est PAS publiée immédiatement.
+    Cette route est publique côté marketplace.
     """
 
-    # --------------------------------------------------------
-    # Vérifier le canal
-    # --------------------------------------------------------
+    if limit < 1:
+        limit = 1
 
-    result = await db.execute(
-        select(Channel).where(
-            Channel.id == payload.channel_id
+    if limit > 100:
+        limit = 100
+
+    if offset < 0:
+        offset = 0
+
+    query = (
+        db.query(Listing)
+        .join(
+            Channel,
+            Listing.channel_id == Channel.id,
+        )
+        .filter(
+            Listing.status == "available",
+            Channel.is_active.is_(True),
+            Channel.telegram_verified.is_(True),
         )
     )
 
-    channel = result.scalar_one_or_none()
+    # --------------------------------------------------------
+    # RECHERCHE
+    # --------------------------------------------------------
 
-    if channel is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Canal introuvable.",
+    if search:
+        search_value = (
+            search.strip()
+            .lower()
+            .replace("@", "")
         )
 
-    if channel.owner_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
+        if search_value:
+            pattern = f"%{search_value}%"
+
+            query = query.filter(
+                or_(
+                    func.lower(
+                        Channel.title
+                    ).like(pattern),
+
+                    func.lower(
+                        Channel.username
+                    ).like(pattern),
+
+                    func.lower(
+                        Channel.description
+                    ).like(pattern),
+                )
+            )
+
+    # --------------------------------------------------------
+    # FILTRES
+    # --------------------------------------------------------
+
+    if category:
+        query = query.filter(
+            Channel.category == category
+        )
+
+    if language:
+        query = query.filter(
+            Channel.language == language
+        )
+
+    if min_price is not None:
+        query = query.filter(
+            Listing.price >= min_price
+        )
+
+    if max_price is not None:
+        query = query.filter(
+            Listing.price <= max_price
+        )
+
+    if min_subscribers is not None:
+        query = query.filter(
+            Channel.subscribers_count
+            >= min_subscribers
+        )
+
+    if max_subscribers is not None:
+        query = query.filter(
+            Channel.subscribers_count
+            <= max_subscribers
+        )
+
+    total = query.count()
+
+    listings = (
+        query
+        .order_by(
+            Listing.created_at.desc()
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+    return {
+        "status": "success",
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "listings": [
+            listing_to_dict(listing)
+            for listing in listings
+        ],
+    }
+
+
+# ============================================================
+# UNE ANNONCE
+# ============================================================
+
+@router.get("/{listing_id}")
+def get_listing(
+    listing_id: int,
+    db: Session = fastapi.Depends(get_db),
+):
+    listing = (
+        db.query(Listing)
+        .filter(
+            Listing.id == listing_id,
+        )
+        .first()
+    )
+
+    if not listing:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="Annonce introuvable.",
+        )
+
+    if listing.status not in (
+        "available",
+        "reserved",
+    ):
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="Cette annonce n'est plus disponible.",
+        )
+
+    return {
+        "status": "success",
+        "listing": listing_to_dict(
+            listing
+        ),
+    }
+
+
+# ============================================================
+# MES ANNONCES
+# ============================================================
+
+@router.get("/mine/all")
+def get_my_listings(
+    db: Session = fastapi.Depends(get_db),
+    current_user: User = fastapi.Depends(
+        get_current_user
+    ),
+):
+    listings = (
+        db.query(Listing)
+        .filter(
+            Listing.seller_id == current_user.id
+        )
+        .order_by(
+            Listing.created_at.desc()
+        )
+        .all()
+    )
+
+    return {
+        "status": "success",
+        "count": len(listings),
+        "listings": [
+            listing_to_dict(listing)
+            for listing in listings
+        ],
+    }
+
+
+# ============================================================
+# CRÉER UNE ANNONCE
+# ============================================================
+
+@router.post("")
+def create_listing(
+    payload: ListingCreate,
+    db: Session = fastapi.Depends(get_db),
+    current_user: User = fastapi.Depends(
+        get_current_user
+    ),
+):
+    """
+    Crée une annonce.
+
+    L'annonce reste en "pending" jusqu'à validation
+    par l'administration.
+    """
+
+    # --------------------------------------------------------
+    # Recherche du canal
+    # --------------------------------------------------------
+
+    username = payload.username.strip()
+
+    if username.startswith("@"):
+        username = username[1:]
+
+    channel = (
+        db.query(Channel)
+        .filter(
+            Channel.username == username,
+            Channel.owner_id == current_user.id,
+            Channel.is_active.is_(True),
+        )
+        .first()
+    )
+
+    if not channel:
+        raise fastapi.HTTPException(
+            status_code=404,
             detail=(
-                "Vous ne pouvez créer une annonce "
-                "que pour votre propre canal."
+                "Canal introuvable. "
+                "Ajoute d'abord le canal à ton compte."
             ),
         )
 
     # --------------------------------------------------------
-    # Vérifications Telegram
+    # Vérifications
     # --------------------------------------------------------
 
-    if not channel.owner_verified:
-        raise HTTPException(
+    if not channel.telegram_verified:
+        raise fastapi.HTTPException(
             status_code=400,
-            detail="Le propriétaire du canal n'est pas vérifié.",
+            detail=(
+                "Le canal doit être vérifié "
+                "avant de créer une annonce."
+            ),
         )
 
     if not channel.bot_is_admin:
-        raise HTTPException(
-            status_code=400,
-            detail="Le bot NexMarket doit être administrateur.",
-        )
-
-    if not channel.bot_permissions_verified:
-        raise HTTPException(
+        raise fastapi.HTTPException(
             status_code=400,
             detail=(
-                "Les permissions du bot NexMarket "
-                "ne sont pas encore vérifiées."
+                "Le bot NexMarket doit être "
+                "administrateur du canal."
+            ),
+        )
+
+    if not channel.seller_is_admin:
+        raise fastapi.HTTPException(
+            status_code=403,
+            detail=(
+                "Tu dois être administrateur "
+                "du canal."
             ),
         )
 
     # --------------------------------------------------------
-    # Devise
+    # Vérifie qu'une annonce active n'existe pas
     # --------------------------------------------------------
 
-    currency = payload.currency.upper()
+    existing_listing = (
+        db.query(Listing)
+        .filter(
+            Listing.channel_id == channel.id,
+            Listing.seller_id == current_user.id,
+            Listing.status.in_(
+                [
+                    "pending",
+                    "available",
+                    "reserved",
+                ]
+            ),
+        )
+        .first()
+    )
 
-    if currency not in settings.get_supported_currencies():
-        raise HTTPException(
-            status_code=400,
-            detail="Devise non supportée.",
+    if existing_listing:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=(
+                "Ce canal possède déjà "
+                "une annonce active."
+            ),
         )
 
     # --------------------------------------------------------
-    # Prix
+    # Frais de publication
     # --------------------------------------------------------
 
-    price = Decimal(str(payload.price))
-
-    if price <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Le prix doit être supérieur à zéro.",
+    publish_fee = Decimal(
+        str(
+            settings.LISTING_PUBLISH_FEE
         )
+    )
+
+    publish_fee_paid = (
+        publish_fee <= Decimal("0")
+    )
 
     # --------------------------------------------------------
     # Création
@@ -124,438 +390,207 @@ async def create_listing(
     listing = Listing(
         channel_id=channel.id,
         seller_id=current_user.id,
-        price=price,
-        currency=currency,
-        title=payload.title,
+
+        price=payload.price,
+        currency=current_user.currency,
+
         description=payload.description,
-        category=payload.category,
-        status="draft",
-        platform_fee_rate=Decimal(
-            str(settings.NEXMARKET_FEE_RATE)
-        ),
-        is_public=False,
+
+        status="pending",
+
+        admin_note=None,
+        validated_by_id=None,
+        validated_at=None,
+
+        locked_price=None,
+        locked_at=None,
+
+        publish_fee=publish_fee,
+        publish_fee_paid=publish_fee_paid,
     )
 
     db.add(listing)
-
-    await db.commit()
-    await db.refresh(listing)
-
-    return listing
-
-
-# ============================================================
-# MY LISTINGS
-# ============================================================
-
-@router.get(
-    "/mine",
-)
-async def get_my_listings(
-    current_user: CurrentUser,
-    db: DBSession,
-):
-    """
-    Retourne les annonces du vendeur connecté.
-    """
-
-    result = await db.execute(
-        select(Listing)
-        .where(
-            Listing.seller_id == current_user.id
-        )
-        .order_by(
-            Listing.created_at.desc()
-        )
-    )
-
-    listings = result.scalars().all()
+    db.commit()
+    db.refresh(listing)
 
     return {
-        "listings": [
-            {
-                "id": listing.id,
-                "channel_id": listing.channel_id,
-                "price": listing.price,
-                "currency": listing.currency,
-                "title": listing.title,
-                "description": listing.description,
-                "category": listing.category,
-                "status": listing.status,
-                "is_public": listing.is_public,
-                "rejection_reason": listing.rejection_reason,
-                "created_at": listing.created_at,
-                "published_at": listing.published_at,
-            }
-            for listing in listings
-        ]
+        "status": "success",
+        "message": (
+            "Annonce créée et envoyée "
+            "à l'administration pour validation."
+        ),
+        "listing": listing_to_dict(
+            listing
+        ),
     }
 
 
 # ============================================================
-# GET PUBLIC LISTINGS
+# MODIFIER UNE ANNONCE
 # ============================================================
 
-@router.get(
-    "",
-    response_model=list[ListingPublicResponse],
-)
-async def get_public_listings(
-    db: DBSession,
-    category: str | None = Query(
-        default=None,
-        max_length=100,
-    ),
-    currency: str | None = Query(
-        default=None,
-        max_length=10,
-    ),
-    limit: int = Query(
-        default=20,
-        ge=1,
-        le=100,
-    ),
-    offset: int = Query(
-        default=0,
-        ge=0,
-    ),
-):
-    """
-    Retourne uniquement les annonces publiées.
-
-    Aucune donnée privée du vendeur n'est exposée.
-    """
-
-    query = (
-        select(Listing)
-        .where(
-            Listing.status == "published",
-            Listing.is_public.is_(True),
-        )
-    )
-
-    if category:
-        query = query.where(
-            Listing.category == category
-        )
-
-    if currency:
-        query = query.where(
-            Listing.currency == currency.upper()
-        )
-
-    query = (
-        query
-        .order_by(
-            Listing.published_at.desc()
-        )
-        .offset(offset)
-        .limit(limit)
-    )
-
-    result = await db.execute(query)
-
-    return list(result.scalars().all())
-
-
-# ============================================================
-# GET LISTING
-# ============================================================
-
-@router.get(
-    "/{listing_id}",
-    response_model=ListingPublicResponse,
-)
-async def get_listing(
-    listing_id: int,
-    db: DBSession,
-):
-    """
-    Retourne une annonce publique.
-    """
-
-    result = await db.execute(
-        select(Listing).where(
-            Listing.id == listing_id,
-            Listing.status == "published",
-            Listing.is_public.is_(True),
-        )
-    )
-
-    listing = result.scalar_one_or_none()
-
-    if listing is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Annonce introuvable.",
-        )
-
-    return listing
-
-
-# ============================================================
-# UPDATE LISTING
-# ============================================================
-
-@router.patch(
-    "/{listing_id}",
-    response_model=ListingPublicResponse,
-)
-async def update_listing(
+@router.patch("/{listing_id}")
+def update_listing(
     listing_id: int,
     payload: ListingUpdate,
-    current_user: CurrentUser,
-    db: DBSession,
+    db: Session = fastapi.Depends(get_db),
+    current_user: User = fastapi.Depends(
+        get_current_user
+    ),
 ):
-    """
-    Modifie une annonce appartenant au vendeur.
-
-    Une annonce déjà publiée ne peut pas être modifiée
-    directement : elle doit repasser par la modération.
-    """
-
-    result = await db.execute(
-        select(Listing).where(
-            Listing.id == listing_id
+    listing = (
+        db.query(Listing)
+        .filter(
+            Listing.id == listing_id,
+            Listing.seller_id == current_user.id,
         )
+        .first()
     )
 
-    listing = result.scalar_one_or_none()
-
-    if listing is None:
-        raise HTTPException(
+    if not listing:
+        raise fastapi.HTTPException(
             status_code=404,
             detail="Annonce introuvable.",
         )
 
-    if listing.seller_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Vous n'êtes pas le vendeur de cette annonce.",
-        )
+    # --------------------------------------------------------
+    # Prix verrouillé
+    # --------------------------------------------------------
 
-    if listing.status in {
-        "reserved",
-        "sold",
-        "suspended",
-    }:
-        raise HTTPException(
-            status_code=400,
+    if listing.status == "reserved":
+        raise fastapi.HTTPException(
+            status_code=409,
             detail=(
-                "Cette annonce ne peut plus être modifiée "
-                "dans son état actuel."
+                "Le prix est actuellement verrouillé "
+                "par une transaction."
             ),
         )
+
+    if listing.status == "sold":
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=(
+                "Cette annonce a déjà été vendue."
+            ),
+        )
+
+    if listing.status in (
+        "cancelled",
+        "archived",
+        "rejected",
+    ):
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=(
+                "Cette annonce ne peut plus être modifiée."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Modification du prix
+    # --------------------------------------------------------
 
     if payload.price is not None:
-        listing.price = Decimal(
-            str(payload.price)
-        )
+        listing.price = payload.price
 
-    if payload.currency is not None:
-        currency = payload.currency.upper()
-
-        if currency not in settings.get_supported_currencies():
-            raise HTTPException(
-                status_code=400,
-                detail="Devise non supportée.",
-            )
-
-        listing.currency = currency
-
-    if payload.title is not None:
-        listing.title = payload.title
+    # --------------------------------------------------------
+    # Description
+    # --------------------------------------------------------
 
     if payload.description is not None:
-        listing.description = payload.description
+        listing.description = (
+            payload.description
+        )
+
+    # --------------------------------------------------------
+    # Les catégories appartiennent au canal
+    # --------------------------------------------------------
+
+    channel = listing.channel
 
     if payload.category is not None:
-        listing.category = payload.category
+        channel.category = payload.category
 
-    # Toute modification d'une annonce doit être
-    # recontrôlée avant publication.
-    listing.status = "draft"
-    listing.is_public = False
-    listing.reviewed_by_admin_id = None
-    listing.reviewed_at = None
-    listing.rejection_reason = None
-    listing.published_at = None
+    if payload.country is not None:
+        channel.country = payload.country
 
-    await db.commit()
-    await db.refresh(listing)
+    if payload.language is not None:
+        channel.language = payload.language
 
-    return listing
+    # --------------------------------------------------------
+    # Si une annonce disponible est modifiée,
+    # elle repasse en validation.
+    # --------------------------------------------------------
 
-
-# ============================================================
-# SUBMIT FOR REVIEW
-# ============================================================
-
-@router.post(
-    "/{listing_id}/submit",
-    response_model=ListingPublicResponse,
-)
-async def submit_listing_for_review(
-    listing_id: int,
-    current_user: CurrentUser,
-    db: DBSession,
-):
-    """
-    Envoie l'annonce à l'équipe NexMarket pour modération.
-    """
-
-    result = await db.execute(
-        select(Listing).where(
-            Listing.id == listing_id
-        )
-    )
-
-    listing = result.scalar_one_or_none()
-
-    if listing is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Annonce introuvable.",
+    if listing.status == "available":
+        listing.status = "pending"
+        listing.validated_by_id = None
+        listing.validated_at = None
+        listing.admin_note = (
+            "Annonce modifiée : nouvelle validation requise."
         )
 
-    if listing.seller_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="Vous n'êtes pas le vendeur de cette annonce.",
-        )
-
-    if listing.status not in {
-        "draft",
-        "rejected",
-    }:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Cette annonce ne peut pas être envoyée "
-                "en modération."
-            ),
-        )
-
-    channel_result = await db.execute(
-        select(Channel).where(
-            Channel.id == listing.channel_id
-        )
-    )
-
-    channel = channel_result.scalar_one_or_none()
-
-    if channel is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Canal associé introuvable.",
-        )
-
-    if not (
-        channel.owner_verified
-        and channel.bot_is_admin
-        and channel.bot_permissions_verified
-    ):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Le canal doit être entièrement vérifié "
-                "avant la modération de l'annonce."
-            ),
-        )
-
-    listing.status = "pending_review"
-    listing.is_public = False
-    listing.rejection_reason = None
-
-    await db.commit()
-    await db.refresh(listing)
-
-    return listing
-
-
-# ============================================================
-# ADMIN REVIEW
-# ============================================================
-
-@router.post(
-    "/{listing_id}/moderate",
-)
-async def moderate_listing(
-    listing_id: int,
-    action: str,
-    reason: str | None,
-    current_admin: CurrentAdmin,
-    db: DBSession,
-):
-    """
-    Validation ou rejet d'une annonce par NexMarket.
-
-    Actions :
-        approve
-        reject
-        suspend
-    """
-
-    result = await db.execute(
-        select(Listing).where(
-            Listing.id == listing_id
-        )
-    )
-
-    listing = result.scalar_one_or_none()
-
-    if listing is None:
-        raise HTTPException(
-            status_code=404,
-            detail="Annonce introuvable.",
-        )
-
-    if action not in {
-        "approve",
-        "reject",
-        "suspend",
-    }:
-        raise HTTPException(
-            status_code=400,
-            detail="Action de modération invalide.",
-        )
-
-    if action == "approve":
-        listing.status = "published"
-        listing.is_public = True
-        listing.reviewed_by_admin_id = current_admin.id
-        listing.reviewed_at = __import__(
-            "datetime"
-        ).datetime.utcnow()
-        listing.published_at = __import__(
-            "datetime"
-        ).datetime.utcnow()
-        listing.rejection_reason = None
-
-    elif action == "reject":
-        listing.status = "rejected"
-        listing.is_public = False
-        listing.reviewed_by_admin_id = current_admin.id
-        listing.reviewed_at = __import__(
-            "datetime"
-        ).datetime.utcnow()
-        listing.rejection_reason = reason
-
-    else:
-        listing.status = "suspended"
-        listing.is_public = False
-        listing.reviewed_by_admin_id = current_admin.id
-        listing.reviewed_at = __import__(
-            "datetime"
-        ).datetime.utcnow()
-        listing.rejection_reason = reason
-
-    await db.commit()
-    await db.refresh(listing)
+    db.commit()
+    db.refresh(listing)
 
     return {
         "status": "success",
-        "listing_id": listing.id,
-        "listing_status": listing.status,
-        "is_public": listing.is_public,
+        "message": "Annonce mise à jour.",
+        "listing": listing_to_dict(
+            listing
+        ),
+    }
+
+
+# ============================================================
+# ANNULER UNE ANNONCE
+# ============================================================
+
+@router.post("/{listing_id}/cancel")
+def cancel_listing(
+    listing_id: int,
+    db: Session = fastapi.Depends(get_db),
+    current_user: User = fastapi.Depends(
+        get_current_user
+    ),
+):
+    listing = (
+        db.query(Listing)
+        .filter(
+            Listing.id == listing_id,
+            Listing.seller_id == current_user.id,
+        )
+        .first()
+    )
+
+    if not listing:
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail="Annonce introuvable.",
+        )
+
+    if listing.status == "reserved":
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=(
+                "Impossible d'annuler cette annonce "
+                "pendant une transaction active."
+            ),
+        )
+
+    if listing.status == "sold":
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=(
+                "Cette annonce a déjà été vendue."
+            ),
+        )
+
+    listing.status = "cancelled"
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Annonce annulée.",
     }
