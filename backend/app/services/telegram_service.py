@@ -1,3 +1,4 @@
+```python
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -7,6 +8,14 @@ from telegram.error import TelegramError
 from telegram.constants import ChatMemberStatus
 
 from app.config import settings
+
+
+class TelegramServiceError(Exception):
+    """
+    Erreur dédiée aux opérations Telegram de NexMarket.
+    """
+
+    pass
 
 
 @dataclass
@@ -57,7 +66,7 @@ class TelegramService:
                 chat_id=channel_id,
             )
         except TelegramError as exc:
-            raise ValueError(
+            raise TelegramServiceError(
                 f"Impossible d'accéder au canal Telegram : {exc}"
             ) from exc
 
@@ -76,7 +85,7 @@ class TelegramService:
                 user_id=telegram_user_id,
             )
         except TelegramError as exc:
-            raise ValueError(
+            raise TelegramServiceError(
                 f"Impossible de vérifier le membre Telegram : {exc}"
             ) from exc
 
@@ -92,13 +101,14 @@ class TelegramService:
             (bot_is_admin, permissions_ok)
         """
 
-        me = await self.bot.get_me()
-
         try:
+            me = await self.bot.get_me()
+
             member = await self.bot.get_chat_member(
                 chat_id=channel_id,
                 user_id=me.id,
             )
+
         except TelegramError:
             return False, False
 
@@ -109,8 +119,7 @@ class TelegramService:
             return False, False
 
         # Le propriétaire possède naturellement les droits
-        # nécessaires. Pour un administrateur, on vérifie
-        # explicitement les permissions.
+        # nécessaires.
         if member.status == ChatMemberStatus.OWNER:
             return True, True
 
@@ -202,7 +211,7 @@ class TelegramService:
                 submitted_by_owner=owner_verified,
             )
 
-        except ValueError as exc:
+        except TelegramServiceError as exc:
             return TelegramChannelVerification(
                 channel_id=channel_id,
                 title=None,
@@ -225,10 +234,15 @@ class TelegramService:
         Envoie un message via le bot.
         """
 
-        return await self.bot.send_message(
-            chat_id=chat_id,
-            text=text,
-        )
+        try:
+            return await self.bot.send_message(
+                chat_id=chat_id,
+                text=text,
+            )
+        except TelegramError as exc:
+            raise TelegramServiceError(
+                f"Impossible d'envoyer le message Telegram : {exc}"
+            ) from exc
 
     async def send_transaction_message(
         self,
@@ -243,3 +257,4 @@ class TelegramService:
             chat_id=telegram_user_id,
             text=text,
         )
+```
