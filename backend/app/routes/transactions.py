@@ -1,318 +1,318 @@
+from __future__ import annotations
+
 from datetime import datetime
-from decimal import Decimal
 
-from sqlalchemy import (
-    Boolean,
-    DateTime,
-    ForeignKey,
-    Integer,
-    Numeric,
-    String,
-    Text,
-)
-from sqlalchemy.orm import Mapped, mapped_column, relationship
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db import Base
+from app.db import get_db
+from app.deps import CurrentAdmin, CurrentUser
+from app.models.listing import Listing
+from app.models.transaction import Transaction
+from app.models.user import User
+from app.services.transaction_service import TransactionService
+
+router = APIRouter(prefix="/transactions", tags=["transactions"])
 
 
-class Transaction(Base):
-    __tablename__ = "transactions"
+async def _get_transaction(
+    transaction_id: int,
+    db: AsyncSession,
+) -> Transaction:
+    result = await db.execute(
+        select(Transaction).where(Transaction.id == transaction_id)
+    )
+    transaction = result.scalar_one_or_none()
 
-    id: Mapped[int] = mapped_column(
-        Integer,
-        primary_key=True,
-        index=True,
+    if transaction is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Transaction introuvable.",
+        )
+
+    return transaction
+
+
+def _can_access(transaction: Transaction, user: User) -> bool:
+    return (
+        transaction.buyer_id == user.id
+        or transaction.seller_id == user.id
+        or transaction.assigned_admin_id == user.id
+        or user.is_admin
     )
 
-    reference: Mapped[str] = mapped_column(
-        String(120),
-        unique=True,
-        nullable=False,
-        index=True,
+
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_transaction(
+    listing_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    listing_result = await db.execute(
+        select(Listing).where(Listing.id == listing_id)
+    )
+    listing = listing_result.scalar_one_or_none()
+
+    if listing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Annonce introuvable.",
+        )
+
+    if listing.seller_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Vous ne pouvez pas acheter votre propre annonce.",
+        )
+
+    if listing.status not in {"approved", "published"} or not listing.is_public:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cette annonce n'est pas disponible à l'achat.",
+        )
+
+    service = TransactionService(db)
+
+    transaction = await service.create_transaction(
+        listing_id=listing.id,
+        buyer_id=current_user.id,
     )
 
-    listing_id: Mapped[int] = mapped_column(
-        ForeignKey("listings.id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
+    await db.commit()
+    await db.refresh(transaction)
+
+    return transaction
+
+
+@router.get("/mine")
+async def my_transactions(
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(Transaction)
+        .where(
+            (Transaction.buyer_id == current_user.id)
+            | (Transaction.seller_id == current_user.id)
+        )
+        .order_by(Transaction.created_at.desc())
     )
 
-    buyer_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
+    return result.scalars().all()
+
+
+@router.get("/{transaction_id}")
+async def get_transaction(
+    transaction_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if not _can_access(transaction, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé.",
+        )
+
+    return transaction
+
+
+@router.post("/{transaction_id}/payment")
+async def create_payment(
+    transaction_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if transaction.buyer_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Seul l'acheteur peut effectuer le paiement.",
+        )
+
+    service = TransactionService(db)
+
+    result = await service.create_payment(
+        transaction_id=transaction.id,
     )
 
-    seller_id: Mapped[int] = mapped_column(
-        ForeignKey("users.id", ondelete="RESTRICT"),
-        nullable=False,
-        index=True,
+    await db.commit()
+
+    return result
+
+
+@router.post("/{transaction_id}/payment/check")
+async def check_payment(
+    transaction_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if not _can_access(transaction, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé.",
+        )
+
+    service = TransactionService(db)
+
+    result = await service.check_payment(
+        transaction_id=transaction.id,
     )
 
-    assigned_admin_id: Mapped[int | None] = mapped_column(
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
+    await db.commit()
+
+    return result
+
+
+@router.post("/{transaction_id}/assign")
+async def assign_transaction(
+    transaction_id: int,
+    admin: CurrentAdmin,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    service = TransactionService(db)
+
+    result = await service.assign_admin(
+        transaction_id=transaction.id,
+        admin_id=admin.id,
     )
 
-    # ========================================================
-    # AMOUNTS
-    # ========================================================
+    await db.commit()
 
-    channel_price: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2),
-        nullable=False,
+    return result
+
+
+@router.post("/{transaction_id}/start-transfer")
+async def start_transfer(
+    transaction_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if not _can_access(transaction, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé.",
+        )
+
+    service = TransactionService(db)
+
+    result = await service.start_transfer(
+        transaction_id=transaction.id,
     )
 
-    platform_fee: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2),
-        nullable=False,
+    await db.commit()
+
+    return result
+
+
+@router.post("/{transaction_id}/complete-transfer")
+async def complete_transfer(
+    transaction_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if not _can_access(transaction, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé.",
+        )
+
+    service = TransactionService(db)
+
+    result = await service.complete_transfer(
+        transaction_id=transaction.id,
     )
 
-    provider_fee: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2),
-        default=Decimal("0.00"),
-        nullable=False,
+    await db.commit()
+
+    return result
+
+
+@router.post("/{transaction_id}/finish-protection")
+async def finish_protection(
+    transaction_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if not _can_access(transaction, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé.",
+        )
+
+    service = TransactionService(db)
+
+    result = await service.finish_protection(
+        transaction_id=transaction.id,
     )
 
-    total_buyer_amount: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2),
-        nullable=False,
+    await db.commit()
+
+    return result
+
+
+@router.post("/{transaction_id}/dispute")
+async def dispute_transaction(
+    transaction_id: int,
+    reason: str,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if not _can_access(transaction, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé.",
+        )
+
+    service = TransactionService(db)
+
+    result = await service.open_dispute(
+        transaction_id=transaction.id,
+        user_id=current_user.id,
+        reason=reason,
     )
 
-    seller_amount: Mapped[Decimal] = mapped_column(
-        Numeric(18, 2),
-        nullable=False,
+    await db.commit()
+
+    return result
+
+
+@router.post("/{transaction_id}/cancel")
+async def cancel_transaction(
+    transaction_id: int,
+    current_user: CurrentUser,
+    db: AsyncSession = Depends(get_db),
+):
+    transaction = await _get_transaction(transaction_id, db)
+
+    if not _can_access(transaction, current_user):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Accès refusé.",
+        )
+
+    service = TransactionService(db)
+
+    result = await service.cancel_transaction(
+        transaction_id=transaction.id,
+        user_id=current_user.id,
     )
 
-    currency: Mapped[str] = mapped_column(
-        String(10),
-        nullable=False,
-    )
+    await db.commit()
 
-    platform_fee_rate: Mapped[Decimal] = mapped_column(
-        Numeric(8, 6),
-        default=Decimal("0.050000"),
-        nullable=False,
-    )
-
-    # ========================================================
-    # TRANSACTION STATUS
-    # ========================================================
-
-    status: Mapped[str] = mapped_column(
-        String(40),
-        default="pending_payment",
-        nullable=False,
-        index=True,
-    )
-
-    # ========================================================
-    # PAYMENT PROVIDER
-    # ========================================================
-
-    payment_provider: Mapped[str | None] = mapped_column(
-        String(50),
-        nullable=True,
-    )
-
-    payment_reference: Mapped[str | None] = mapped_column(
-        String(150),
-        unique=True,
-        nullable=True,
-        index=True,
-    )
-
-    # ID fourni par JessiKaPay lors de la création
-    # du payment-request.
-    jessikapay_request_id: Mapped[str | None] = mapped_column(
-        String(150),
-        unique=True,
-        nullable=True,
-        index=True,
-    )
-
-    payment_status: Mapped[str | None] = mapped_column(
-        String(40),
-        nullable=True,
-    )
-
-    payment_confirmed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    # ========================================================
-    # ESCROW
-    # ========================================================
-
-    escrow_held: Mapped[bool] = mapped_column(
-        Boolean,
-        default=False,
-        nullable=False,
-    )
-
-    escrow_held_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    protection_ends_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    # ========================================================
-    # CHANNEL TRANSFER
-    # ========================================================
-
-    transfer_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    transfer_completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    buyer_confirmed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    # ========================================================
-    # DISPUTE
-    # ========================================================
-
-    dispute_reason: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    disputed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    dispute_resolved_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    # ========================================================
-    # SELLER PAYOUT
-    # ========================================================
-
-    seller_paid_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    seller_payout_reference: Mapped[str | None] = mapped_column(
-        String(150),
-        unique=True,
-        nullable=True,
-        index=True,
-    )
-
-    # ID de transaction retourné par JessiKaPay.
-    jessikapay_payout_transaction_id: Mapped[
-        str | None
-    ] = mapped_column(
-        String(150),
-        unique=True,
-        nullable=True,
-        index=True,
-    )
-
-    nexmarket_fee_recorded_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    # ========================================================
-    # REFUND / CANCELLATION
-    # ========================================================
-
-    cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    refunded_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
-        nullable=True,
-    )
-
-    refund_reference: Mapped[str | None] = mapped_column(
-        String(150),
-        unique=True,
-        nullable=True,
-    )
-
-    admin_notes: Mapped[str | None] = mapped_column(
-        Text,
-        nullable=True,
-    )
-
-    # ========================================================
-    # TIMESTAMPS
-    # ========================================================
-
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        nullable=False,
-    )
-
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
-        nullable=False,
-    )
-
-    # ========================================================
-    # RELATIONSHIPS
-    # ========================================================
-
-    listing = relationship(
-        "Listing",
-        back_populates="transactions",
-    )
-
-    buyer = relationship(
-        "User",
-        foreign_keys=[buyer_id],
-        back_populates="buyer_transactions",
-    )
-
-    seller = relationship(
-        "User",
-        foreign_keys=[seller_id],
-        back_populates="seller_transactions",
-    )
-
-    assigned_admin = relationship(
-        "User",
-        foreign_keys=[assigned_admin_id],
-    )
-
-    messages = relationship(
-        "Message",
-        back_populates="transaction",
-        cascade="all, delete-orphan",
-    )
-
-    reports = relationship(
-        "Report",
-        back_populates="transaction",
-        cascade="all, delete-orphan",
-    )
-
-    reviews = relationship(
-        "Review",
-        back_populates="transaction",
-        cascade="all, delete-orphan",
-    )
+    return result
