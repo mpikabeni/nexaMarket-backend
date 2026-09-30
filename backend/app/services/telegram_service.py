@@ -1,4 +1,4 @@
-```python
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -257,4 +257,3 @@ class TelegramService:
             chat_id=telegram_user_id,
             text=text,
         )
-```
