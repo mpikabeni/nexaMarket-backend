@@ -409,3 +409,9 @@ class Transaction(Base):
         foreign_keys="Review.transaction_id",
         back_populates="transaction",
     )
+   
+   platform_ledger_entries = relationship(
+    "PlatformLedger",
+    foreign_keys="PlatformLedger.transaction_id",
+    back_populates="transaction",
+)
