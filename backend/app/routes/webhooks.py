@@ -3,18 +3,16 @@ from __future__ import annotations
 from decimal import Decimal
 
 from fastapi import APIRouter, HTTPException, Request
+from sqlalchemy import select
 
 from app.db import AsyncSessionLocal
 from app.models import User
-from app.services.jessikapay import (
-    JessiKaPayError,
-    jessikapay_service,
-)
+from app.models.withdrawal import Withdrawal
+
 from app.services.wallet_service import (
     WalletService,
     WalletServiceError,
 )
-from sqlalchemy import select
 
 
 router = APIRouter(
@@ -26,20 +24,24 @@ router = APIRouter(
 @router.post("/jessikapay")
 async def jessikapay_webhook(request: Request):
     """
-    Reçoit les événements JessiKaPay.
+    Réception des événements JessiKaPay.
 
-    Événements pris en charge :
+    Événements :
     - deposit.completed
     - payment.completed
     - credit.completed
 
-    Aucun mécanisme de signature webhook n'est inventé ici,
-    car la documentation fournie ne définit pas de signature
-    entrante.
+    La documentation JessiKaPay fournie ne définit pas
+    de signature entrante pour les webhooks. Nous n'en
+    inventons donc pas.
 
-    Le traitement doit rester idempotent grâce aux références
-    JessiKaPay enregistrées dans les opérations du wallet.
+    Les opérations financières sont rendues idempotentes
+    grâce aux références enregistrées dans NexMarket.
     """
+
+    # ========================================================
+    # READ PAYLOAD
+    # ========================================================
 
     try:
         payload = await request.json()
@@ -62,6 +64,7 @@ async def jessikapay_webhook(request: Request):
     # ========================================================
 
     if event == "deposit.completed":
+
         request_id = payload.get("request_id")
         telegram_id = payload.get("telegram_id")
         amount = payload.get("amount")
@@ -105,10 +108,23 @@ async def jessikapay_webhook(request: Request):
                 detail="Le montant doit être supérieur à zéro.",
             )
 
+        try:
+            telegram_id_int = int(telegram_id)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="telegram_id invalide.",
+            ) from exc
+
         async with AsyncSessionLocal() as db:
+
+            # ------------------------------------------------
+            # FIND USER
+            # ------------------------------------------------
+
             result = await db.execute(
                 select(User).where(
-                    User.telegram_id == int(telegram_id)
+                    User.telegram_id == telegram_id_int
                 )
             )
 
@@ -121,6 +137,10 @@ async def jessikapay_webhook(request: Request):
                 )
 
             wallet_service = WalletService(db)
+
+            # ------------------------------------------------
+            # CREDIT WALLET
+            # ------------------------------------------------
 
             try:
                 wallet = await wallet_service.credit(
@@ -135,8 +155,8 @@ async def jessikapay_webhook(request: Request):
                 )
 
             except WalletServiceError as exc:
-                # Si l'opération existe déjà, le webhook a
-                # probablement été reçu une seconde fois.
+
+                # Webhook reçu une deuxième fois.
                 if "déjà été enregistrée" in str(exc):
                     return {
                         "received": True,
@@ -156,8 +176,10 @@ async def jessikapay_webhook(request: Request):
             "status": "processed",
             "request_id": request_id,
             "reference": reference,
-            "amount": amount,
-            "wallet_balance": wallet.available_balance,
+            "amount": float(amount_decimal),
+            "wallet_balance": float(
+                wallet.available_balance
+            ),
         }
 
     # ========================================================
@@ -165,6 +187,7 @@ async def jessikapay_webhook(request: Request):
     # ========================================================
 
     if event == "payment.completed":
+
         return {
             "received": True,
             "event": event,
@@ -176,14 +199,213 @@ async def jessikapay_webhook(request: Request):
     # ========================================================
 
     if event == "credit.completed":
+
+        transaction_id = payload.get(
+            "transaction_id"
+        )
+
+        jp_number = payload.get(
+            "jp_number"
+        )
+
+        telegram_id = payload.get(
+            "telegram_id"
+        )
+
+        amount = payload.get(
+            "amount"
+        )
+
+        reference = payload.get(
+            "reference"
+        )
+
+        if not transaction_id:
+            raise HTTPException(
+                status_code=400,
+                detail="transaction_id manquant.",
+            )
+
+        if not jp_number:
+            raise HTTPException(
+                status_code=400,
+                detail="jp_number manquant.",
+            )
+
+        if amount is None:
+            raise HTTPException(
+                status_code=400,
+                detail="amount manquant.",
+            )
+
+        if not reference:
+            raise HTTPException(
+                status_code=400,
+                detail="reference manquante.",
+            )
+
+        try:
+            amount_decimal = Decimal(
+                str(amount)
+            )
+        except Exception as exc:
+            raise HTTPException(
+                status_code=400,
+                detail="Montant invalide.",
+            ) from exc
+
+        if amount_decimal <= 0:
+            raise HTTPException(
+                status_code=400,
+                detail="Le montant doit être supérieur à zéro.",
+            )
+
+        async with AsyncSessionLocal() as db:
+
+            # ------------------------------------------------
+            # FIND WITHDRAWAL
+            # ------------------------------------------------
+
+            result = await db.execute(
+                select(Withdrawal).where(
+                    Withdrawal.reference
+                    == str(reference)
+                )
+            )
+
+            withdrawal = (
+                result.scalar_one_or_none()
+            )
+
+            if withdrawal is None:
+                # On ne consomme aucun fonds si la référence
+                # ne correspond pas à un retrait NexMarket.
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        "Retrait NexMarket introuvable "
+                        "pour cette référence."
+                    ),
+                )
+
+            # ------------------------------------------------
+            # IDEMPOTENCE
+            # ------------------------------------------------
+
+            if withdrawal.status == "completed":
+                return {
+                    "received": True,
+                    "event": event,
+                    "status": "already_processed",
+                    "reference": reference,
+                    "transaction_id": transaction_id,
+                }
+
+            # ------------------------------------------------
+            # VERIFY BASIC DATA
+            # ------------------------------------------------
+
+            if (
+                withdrawal.jessikapay_jp_number
+                and str(
+                    withdrawal.jessikapay_jp_number
+                ) != str(jp_number)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Le numéro JessiKaPay du webhook "
+                        "ne correspond pas au retrait."
+                    ),
+                )
+
+            withdrawal_amount = Decimal(
+                str(withdrawal.amount)
+            )
+
+            if withdrawal_amount != amount_decimal:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Le montant du webhook "
+                        "ne correspond pas au retrait."
+                    ),
+                )
+
+            # ------------------------------------------------
+            # PROVIDER REFERENCE
+            # ------------------------------------------------
+
+            if (
+                withdrawal.provider_reference
+                and str(
+                    withdrawal.provider_reference
+                ) != str(transaction_id)
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Le transaction_id JessiKaPay "
+                        "ne correspond pas au retrait."
+                    ),
+                )
+
+            # ------------------------------------------------
+            # CONSUME BLOCKED FUNDS
+            # ------------------------------------------------
+
+            wallet_service = WalletService(db)
+
+            consume_reference = (
+                f"{reference}-CONSUME"
+            )
+
+            try:
+                wallet = (
+                    await wallet_service.consume_blocked(
+                        user_id=withdrawal.user_id,
+                        amount=amount_decimal,
+                        reference=consume_reference,
+                        description=(
+                            "Retrait confirmé par JessiKaPay"
+                        ),
+                    )
+                )
+
+            except WalletServiceError as exc:
+                raise HTTPException(
+                    status_code=409,
+                    detail=str(exc),
+                ) from exc
+
+            # ------------------------------------------------
+            # UPDATE WITHDRAWAL
+            # ------------------------------------------------
+
+            withdrawal.provider_reference = str(
+                transaction_id
+            )
+
+            withdrawal.status = "completed"
+
+            await db.commit()
+
         return {
             "received": True,
             "event": event,
-            "status": "received",
+            "status": "processed",
+            "reference": reference,
+            "transaction_id": transaction_id,
+            "jp_number": jp_number,
+            "amount": float(amount_decimal),
+            "withdrawal_status": "completed",
+            "wallet_balance": float(
+                wallet.available_balance
+            ),
         }
 
     # ========================================================
-    # EVENT INCONNU
+    # UNKNOWN EVENT
     # ========================================================
 
     return {
