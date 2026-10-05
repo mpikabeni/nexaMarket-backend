@@ -50,7 +50,6 @@ class Transaction(Base):
         index=True,
     )
 
-    # Administrateur qui prend en charge la transaction
     assigned_admin_id: Mapped[int | None] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"),
         nullable=True,
@@ -61,33 +60,28 @@ class Transaction(Base):
     # AMOUNTS
     # =========================================================
 
-    # Prix accepté du canal
     channel_price: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         nullable=False,
     )
 
-    # Commission NexMarket
     platform_fee: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         default=Decimal("0.00"),
         nullable=False,
     )
 
-    # Frais du prestataire de paiement, s'ils existent
     provider_fee: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         default=Decimal("0.00"),
         nullable=False,
     )
 
-    # Total payé par l'acheteur
     total_buyer_amount: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         nullable=False,
     )
 
-    # Montant final versé au vendeur
     seller_amount: Mapped[Decimal] = mapped_column(
         Numeric(18, 2),
         nullable=False,
@@ -102,17 +96,6 @@ class Transaction(Base):
     # =========================================================
     # STATUS
     # =========================================================
-    #
-    # pending_payment
-    # payment_confirmed
-    # waiting_admin
-    # assigned
-    # transfer_pending
-    # completed
-    # cancelled
-    # disputed
-    # refunded
-    #
 
     status: Mapped[str] = mapped_column(
         String(40),
@@ -147,7 +130,6 @@ class Transaction(Base):
     # TELEGRAM TRANSFER
     # =========================================================
 
-    # Telegram chat ID du canal concerné
     telegram_chat_id: Mapped[int | None] = mapped_column(
         nullable=True,
         index=True,
@@ -228,16 +210,20 @@ class Transaction(Base):
         back_populates="transactions",
     )
 
+    # IMPORTANT :
+    # User utilise buyer_transactions
     buyer = relationship(
         "User",
         foreign_keys=[buyer_id],
-        back_populates="transactions_as_buyer",
+        back_populates="buyer_transactions",
     )
 
+    # IMPORTANT :
+    # User utilise seller_transactions
     seller = relationship(
         "User",
         foreign_keys=[seller_id],
-        back_populates="transactions_as_seller",
+        back_populates="seller_transactions",
     )
 
     assigned_admin = relationship(
@@ -252,6 +238,16 @@ class Transaction(Base):
         order_by="Message.created_at.asc()",
     )
 
+    platform_ledger_entries = relationship(
+        "PlatformLedger",
+        foreign_keys="PlatformLedger.transaction_id",
+        back_populates="transaction",
+    )
+
+    # =========================================================
+    # REPRESENTATION
+    # =========================================================
+
     def __repr__(self) -> str:
         return (
             f"<Transaction "
@@ -259,8 +255,3 @@ class Transaction(Base):
             f"reference={self.reference!r} "
             f"status={self.status!r}>"
         )
-    platform_ledger_entries = relationship(
-        "PlatformLedger",
-        foreign_keys="PlatformLedger.transaction_id",
-        back_populates="transaction",
-    )
