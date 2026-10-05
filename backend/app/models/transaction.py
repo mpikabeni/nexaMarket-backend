@@ -246,6 +246,14 @@ class Transaction(Base):
         
     )
     
+    reviews = relationship(
+    "Review",
+    foreign_keys="Review.transaction_id",
+    back_populates="transaction",
+    cascade="all, delete-orphan",
+        
+    )
+    
     platform_ledger_entries = relationship(
         "PlatformLedger",
         foreign_keys="PlatformLedger.transaction_id",
