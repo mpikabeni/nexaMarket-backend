@@ -238,6 +238,13 @@ class Transaction(Base):
         order_by="Message.created_at.asc()",
     )
 
+reports = relationship(
+    "Report",
+    foreign_keys="Report.transaction_id",
+    back_populates="transaction",
+    cascade="all, delete-orphan",
+)
+    
     platform_ledger_entries = relationship(
         "PlatformLedger",
         foreign_keys="PlatformLedger.transaction_id",
