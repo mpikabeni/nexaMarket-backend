@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import (
+   from sqlalchemy import (
     Boolean,
     DateTime,
     ForeignKey,
@@ -30,11 +30,11 @@ class User(Base):
     # ========================================================
 
     telegram_id: Mapped[int] = mapped_column(
-        Integer,
-        nullable=False,
-        unique=True,
-        index=True,
-    )
+    BigInteger,
+    nullable=False,
+    unique=True,
+    index=True,
+)
 
     username: Mapped[str | None] = mapped_column(
         String(100),
