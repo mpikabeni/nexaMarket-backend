@@ -9,6 +9,7 @@ from typing import Optional
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    MenuButtonWebApp,
     Update,
     WebAppInfo,
 )
@@ -75,17 +76,7 @@ def main_keyboard() -> InlineKeyboardMarkup:
                     "🛒 Ouvrir NexMarket",
                     web_app=WebAppInfo(url=FRONTEND_URL),
                 )
-            ],
-            [
-                InlineKeyboardButton(
-                    "📖 Aide",
-                    callback_data="help",
-                ),
-                InlineKeyboardButton(
-                    "ℹ️ À propos",
-                    callback_data="about",
-                ),
-            ],
+            ]
         ]
     )
 
@@ -302,6 +293,21 @@ async def start_command(
             text += (
                 "\n\n👑 <b>Administrateur NexMarket</b>\n"
                 "Utilisez /admin pour ouvrir le panneau."
+            )
+
+        try:
+            await context.bot.set_chat_menu_button(
+                chat_id=telegram_user.id,
+                menu_button=MenuButtonWebApp(
+                    text="NexMarket",
+                    web_app=WebAppInfo(url=FRONTEND_URL),
+                ),
+            )
+        except Exception as menu_error:
+            logger.warning(
+                "Impossible de configurer le bouton Mini App du menu | telegram_id=%s | erreur=%s",
+                telegram_user.id,
+                menu_error,
             )
 
         await update.message.reply_text(
