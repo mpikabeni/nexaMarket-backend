@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -15,9 +16,15 @@ router = APIRouter(
 )
 
 
+class TelegramAuthRequest(BaseModel):
+    init_data: str
+
+
+# POST /api/auth  et  POST /api/auth/telegram  (même comportement)
+@router.post("")
 @router.post("/telegram")
 async def authenticate_telegram(
-    init_data: str,
+    payload: TelegramAuthRequest,
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -26,7 +33,7 @@ async def authenticate_telegram(
     Le frontend envoie le initData brut fourni par Telegram.
     """
 
-    telegram_data = validate_telegram_init_data(init_data)
+    telegram_data = validate_telegram_init_data(payload.init_data)
 
     telegram_id = telegram_data["telegram_id"]
 

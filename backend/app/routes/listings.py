@@ -5,8 +5,11 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
+import functools
+
 import fastapi
 from sqlalchemy import func, or_
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: F401
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -22,6 +25,29 @@ router = fastapi.APIRouter(
     prefix="/listings",
     tags=["Listings"],
 )
+
+
+# ============================================================
+# PONT SYNC -> ASYNC
+# ============================================================
+# get_db fournit une AsyncSession : db.query(...) n'existe pas dessus
+# ("'AsyncSession' object has no attribute 'query'").
+# Ce décorateur exécute la route (écrite avec l'API Query classique)
+# sur la session synchrone sous-jacente via db.run_sync(...).
+# Défini ICI (même module) pour que FastAPI résolve bien les annotations.
+
+def sync_route(fn):
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        async_db = kwargs["db"]
+
+        def call(session):
+            return fn(*args, **{**kwargs, "db": session})
+
+        return await async_db.run_sync(call)
+
+    return wrapper
+
 
 
 # ============================================================
@@ -60,6 +86,7 @@ def listing_to_dict(listing: Listing) -> dict:
 # ============================================================
 
 @router.get("")
+@sync_route
 def get_listings(
     search: str | None = None,
     category: str | None = None,
@@ -195,6 +222,7 @@ def get_listings(
 # ============================================================
 
 @router.get("/{listing_id}")
+@sync_route
 def get_listing(
     listing_id: int,
     db: Session = fastapi.Depends(get_db),
@@ -235,6 +263,7 @@ def get_listing(
 # ============================================================
 
 @router.get("/mine/all")
+@sync_route
 def get_my_listings(
     db: Session = fastapi.Depends(get_db),
     current_user: User = fastapi.Depends(
@@ -267,6 +296,7 @@ def get_my_listings(
 # ============================================================
 
 @router.post("")
+@sync_route
 def create_listing(
     payload: ListingCreate,
     db: Session = fastapi.Depends(get_db),
@@ -430,6 +460,7 @@ def create_listing(
 # ============================================================
 
 @router.patch("/{listing_id}")
+@sync_route
 def update_listing(
     listing_id: int,
     payload: ListingUpdate,
@@ -547,6 +578,7 @@ def update_listing(
 # ============================================================
 
 @router.post("/{listing_id}/cancel")
+@sync_route
 def cancel_listing(
     listing_id: int,
     db: Session = fastapi.Depends(get_db),
