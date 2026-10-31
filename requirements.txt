@@ -1,10 +1,42 @@
-python-telegram-bot[webhooks]>=22.0,<23.0
-openai>=1.0,<2.0
-httpx>=0.27,<1.0
-python-dotenv>=1.0,<2.0
-yt-dlp>=2025.1.0
-imageio-ffmpeg>=0.5.1
-Pillow>=10.0,<12.0
-chess>=1.11,<2.0
-python-chess>=1.11.0,<2
-psycopg[binary]>=3.2,<4
+# =========================================================
+# NEXMARKET BACKEND — FINAL
+# =========================================================
+
+# -------------------------
+# API
+# -------------------------
+fastapi==0.115.14
+uvicorn[standard]==0.34.3
+
+# -------------------------
+# DATABASE (driver asynchrone : asyncpg)
+# -------------------------
+SQLAlchemy==2.0.41
+asyncpg==0.30.0
+
+# -------------------------
+# CONFIGURATION
+# -------------------------
+pydantic==2.11.7
+pydantic-settings==2.10.1
+python-dotenv==1.1.1
+
+# -------------------------
+# AUTHENTICATION
+# -------------------------
+PyJWT==2.10.1
+
+# -------------------------
+# HTTP / API PROVIDERS
+# -------------------------
+httpx==0.28.1
+
+# -------------------------
+# TELEGRAM
+# -------------------------
+python-telegram-bot==22.8
+
+# -------------------------
+# FILE UPLOADS
+# -------------------------
+python-multipart==0.0.20
