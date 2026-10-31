@@ -1,5 +1,6 @@
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -8,7 +9,7 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.0"
     ENVIRONMENT: str = "production"
 
-    FRONTEND_URL: str = "https://nexamarke.netlify.app"
+    FRONTEND_URL: str = "https://nexamarketf.netlify.app"
 
     DATABASE_URL: str
 
@@ -50,6 +51,11 @@ class Settings(BaseSettings):
     JESSIKAPAY_API_KEY: str = ""
     JESSIKAPAY_API_SECRET: str = ""
     JESSIKAPAY_WEBHOOK_URL: str = ""
+
+    # Secret partagé qui authentifie les webhooks entrants.
+    # À envoyer par JessiKaPay dans l'en-tête X-Webhook-Secret
+    # (ou en paramètre ?token=... de l'URL du webhook).
+    JESSIKAPAY_WEBHOOK_SECRET: str = ""
     NEXA_JP_NUMBER: str = ""
 
     # ========================================================
@@ -64,11 +70,24 @@ class Settings(BaseSettings):
 
     ESCROW_PROTECTION_MINUTES: int = 60
 
+    # Une transaction non payée au-delà de ce délai est annulée
+    # et l'annonce est remise en vente.
+    PENDING_PAYMENT_TTL_MINUTES: int = 120
+
     # ========================================================
     # CORS
     # ========================================================
 
     CORS_ORIGINS: str = ""
+
+    @field_validator("JWT_SECRET")
+    @classmethod
+    def _jwt_secret_strong(cls, value: str) -> str:
+        if len(value) < 32:
+            raise ValueError(
+                "JWT_SECRET doit contenir au moins 32 caractères."
+            )
+        return value
 
     model_config = SettingsConfigDict(
         env_file=".env",

@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import AsyncSessionLocal
-from app.models import Channel, Transaction, User
+from app.models import Channel, Transaction, User, Wallet
 from app.services.telegram_service import TelegramService
 
 
@@ -215,6 +215,20 @@ async def start_command(
                 )
 
                 db.add(user)
+
+                # Un wallet est indispensable (dépôts / retraits).
+                # Avant, seul /api/auth le créait.
+                await db.flush()
+
+                db.add(
+                    Wallet(
+                        user_id=user.id,
+                        available_balance=0,
+                        blocked_balance=0,
+                        total_revenue=0,
+                        currency="XAF",
+                    )
+                )
 
                 await db.commit()
                 await db.refresh(user)
@@ -625,10 +639,9 @@ async def transaction_command(
 
         labels = {
             "pending_payment": "Paiement en attente",
-            "payment_confirmed": "Paiement confirmé",
-            "waiting_admin": "En attente d'un administrateur",
-            "assigned": "Administrateur assigné",
-            "transfer_pending": "Transfert en cours",
+            "waiting_admin": "Fonds réservés - en attente d'un administrateur",
+            "transfer_started": "Transfert du canal en cours",
+            "protection_period": "Période de protection",
             "completed": "Terminée",
             "cancelled": "Annulée",
             "disputed": "Litige",
