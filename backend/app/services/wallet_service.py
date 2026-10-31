@@ -6,11 +6,16 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.user import User
 from app.models.wallet import Wallet, WalletOperation
 
 
 class WalletServiceError(Exception):
     """Erreur métier liée au wallet."""
+
+
+class DuplicateOperationError(WalletServiceError):
+    """La même référence d'opération a déjà été enregistrée."""
 
 
 class WalletService:
@@ -61,19 +66,44 @@ class WalletService:
     async def get_wallet(
         self,
         user_id: int,
+        *,
+        for_update: bool = False,
     ) -> Wallet:
-        result = await self.db.execute(
-            select(Wallet).where(
-                Wallet.user_id == user_id
-            )
+        query = select(Wallet).where(
+            Wallet.user_id == user_id
         )
+
+        # Verrou de ligne : sans lui, deux requêtes simultanées lisent
+        # le même solde et l'une écrase l'autre (double dépense).
+        if for_update:
+            query = query.with_for_update()
+
+        result = await self.db.execute(query)
 
         wallet = result.scalar_one_or_none()
 
         if wallet is None:
-            raise WalletServiceError(
-                "Wallet introuvable."
+            # Les comptes créés par le bot n'avaient pas de wallet :
+            # on le crée à la demande plutôt que de bloquer un dépôt.
+            user_exists = await self.db.execute(
+                select(User.id).where(User.id == user_id)
             )
+
+            if user_exists.first() is None:
+                raise WalletServiceError(
+                    "Wallet introuvable."
+                )
+
+            wallet = Wallet(
+                user_id=user_id,
+                available_balance=Decimal("0.00"),
+                blocked_balance=Decimal("0.00"),
+                total_revenue=Decimal("0.00"),
+                currency="XAF",
+            )
+
+            self.db.add(wallet)
+            await self.db.flush()
 
         return wallet
 
@@ -86,7 +116,8 @@ class WalletService:
         user_id: int,
     ) -> dict:
         wallet = await self.get_wallet(
-            user_id
+            user_id,
+            for_update=False,
         )
 
         return {
@@ -125,7 +156,8 @@ class WalletService:
             )
 
         wallet = await self.get_wallet(
-            user_id
+            user_id,
+            for_update=True,
         )
 
         operation_reference = (
@@ -143,7 +175,7 @@ class WalletService:
         )
 
         if existing.scalar_one_or_none() is not None:
-            raise WalletServiceError(
+            raise DuplicateOperationError(
                 "Cette opération a déjà été enregistrée."
             )
 
@@ -196,7 +228,8 @@ class WalletService:
             )
 
         wallet = await self.get_wallet(
-            user_id
+            user_id,
+            for_update=True,
         )
 
         available = self._money(
@@ -221,7 +254,7 @@ class WalletService:
         )
 
         if existing.scalar_one_or_none() is not None:
-            raise WalletServiceError(
+            raise DuplicateOperationError(
                 "Cette opération a déjà été enregistrée."
             )
 
@@ -273,7 +306,8 @@ class WalletService:
             )
 
         wallet = await self.get_wallet(
-            user_id
+            user_id,
+            for_update=True,
         )
 
         available = self._money(
@@ -293,7 +327,7 @@ class WalletService:
         )
 
         if existing.scalar_one_or_none() is not None:
-            raise WalletServiceError(
+            raise DuplicateOperationError(
                 "Cette opération existe déjà."
             )
 
@@ -349,7 +383,8 @@ class WalletService:
             )
 
         wallet = await self.get_wallet(
-            user_id
+            user_id,
+            for_update=True,
         )
 
         blocked = self._money(
@@ -369,7 +404,7 @@ class WalletService:
         )
 
         if existing.scalar_one_or_none() is not None:
-            raise WalletServiceError(
+            raise DuplicateOperationError(
                 "Cette opération existe déjà."
             )
 
@@ -426,7 +461,8 @@ class WalletService:
             )
 
         wallet = await self.get_wallet(
-            user_id
+            user_id,
+            for_update=True,
         )
 
         blocked = self._money(
@@ -446,7 +482,7 @@ class WalletService:
         )
 
         if existing.scalar_one_or_none() is not None:
-            raise WalletServiceError(
+            raise DuplicateOperationError(
                 "Cette opération existe déjà."
             )
 
@@ -492,7 +528,8 @@ class WalletService:
             limit = 100
 
         wallet = await self.get_wallet(
-            user_id
+            user_id,
+            for_update=False,
         )
 
         result = await self.db.execute(

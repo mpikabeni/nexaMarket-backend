@@ -12,9 +12,10 @@ from app.models.listing import Listing
 from app.models.platform import PlatformLedger, PlatformWallet
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.services.jessikapay_service import (
-    JessiKaPayError,
-    JessiKaPayService,
+from app.services.notification_service import notify_user_id
+from app.services.wallet_service import (
+    DuplicateOperationError,
+    WalletService,
 )
 
 
@@ -26,7 +27,7 @@ class TransactionService:
 
     def __init__(self, db: AsyncSession):
         self.db = db
-        self.jessikapay = JessiKaPayService()
+        self.wallet = WalletService(db)
 
     # ============================================================
     # HELPERS
@@ -161,12 +162,7 @@ class TransactionService:
 
         currency = listing.currency.upper()
 
-        fee_rate = self._money(
-            listing.platform_fee_rate
-        )
-
-        # Le taux est stocké avec davantage de précision
-        # dans la base. On récupère donc sa valeur originale.
+        # Le taux est stocké avec 6 décimales : pas d'arrondi à 0.01.
         fee_rate = Decimal(
             str(listing.platform_fee_rate)
         )
@@ -204,183 +200,6 @@ class TransactionService:
 
         # Réserver l'annonce immédiatement.
         listing.status = "reserved"
-
-        await self.db.commit()
-        await self.db.refresh(transaction)
-
-        return transaction
-
-    # ============================================================
-    # CREATE PAYMENT
-    # ============================================================
-
-    async def create_payment(
-        self,
-        transaction_id: int,
-    ) -> dict:
-
-        transaction = await self._get_transaction(
-            transaction_id,
-            lock=True,
-        )
-
-        if transaction.status != "pending_payment":
-            raise TransactionServiceError(
-                "Cette transaction n'attend pas un paiement."
-            )
-
-        if transaction.currency.upper() != "XAF":
-            raise TransactionServiceError(
-                "Les paiements JessiKaPay sont actuellement "
-                "traités uniquement en XAF."
-            )
-
-        if not settings.NEXA_JP_NUMBER:
-            raise TransactionServiceError(
-                "Le compte JessiKaPay de NEXA n'est pas configuré."
-            )
-
-        amount = self._money(
-            transaction.total_buyer_amount
-        )
-
-        if amount <= 0:
-            raise TransactionServiceError(
-                "Montant de paiement invalide."
-            )
-
-        reference = (
-            f"NMX-PAY-{transaction.reference}"
-        )
-
-        try:
-            response = (
-                await self.jessikapay.create_payment_request(
-                    jp_number=settings.NEXA_JP_NUMBER,
-                    amount=int(amount),
-                    reference=reference,
-                    description=(
-                        f"Paiement NexMarket "
-                        f"{transaction.reference}"
-                    ),
-                )
-            )
-
-        except JessiKaPayError as exc:
-            raise TransactionServiceError(
-                f"Impossible de créer le paiement : {exc}"
-            ) from exc
-
-        request_id = response.get(
-            "request_id"
-        )
-
-        if not request_id:
-            raise TransactionServiceError(
-                "JessiKaPay n'a pas retourné de request_id."
-            )
-
-        transaction.payment_provider = "jessikapay"
-        transaction.payment_reference = reference
-        transaction.jessikapay_request_id = str(
-            request_id
-        )
-        transaction.payment_status = response.get(
-            "status",
-            "pending",
-        )
-
-        await self.db.commit()
-
-        return {
-            "transaction_id": transaction.id,
-            "reference": transaction.reference,
-            "request_id": request_id,
-            "code": response.get("code"),
-            "payment_link": response.get(
-                "payment_link"
-            ),
-            "amount": amount,
-            "status": response.get(
-                "status",
-                "pending",
-            ),
-            "expires_at": response.get(
-                "expires_at"
-            ),
-        }
-
-    # ============================================================
-    # CONFIRM PAYMENT
-    # ============================================================
-
-    async def confirm_payment(
-        self,
-        *,
-        payment_reference: str | None = None,
-        request_id: str | None = None,
-        amount: Decimal,
-    ) -> Transaction:
-
-        query = select(Transaction)
-
-        if request_id:
-            query = query.where(
-                Transaction.jessikapay_request_id
-                == str(request_id)
-            )
-
-        elif payment_reference:
-            query = query.where(
-                Transaction.payment_reference
-                == payment_reference
-            )
-
-        else:
-            raise TransactionServiceError(
-                "Référence de paiement manquante."
-            )
-
-        query = query.with_for_update()
-
-        result = await self.db.execute(query)
-
-        transaction = result.scalar_one_or_none()
-
-        if not transaction:
-            raise TransactionServiceError(
-                "Transaction correspondant au paiement introuvable."
-            )
-
-        # Idempotence
-        if transaction.payment_status == "completed":
-            return transaction
-
-        expected_amount = self._money(
-            transaction.total_buyer_amount
-        )
-
-        received_amount = self._money(
-            amount
-        )
-
-        if expected_amount != received_amount:
-            raise TransactionServiceError(
-                "Le montant reçu ne correspond pas "
-                "au montant de la transaction."
-            )
-
-        transaction.payment_status = "completed"
-        transaction.payment_confirmed_at = (
-            self._now()
-        )
-
-        transaction.escrow_held = True
-        transaction.escrow_held_at = (
-            self._now()
-        )
-
-        transaction.status = "waiting_admin"
 
         await self.db.commit()
         await self.db.refresh(transaction)
@@ -449,6 +268,12 @@ class TransactionService:
         await self.db.commit()
         await self.db.refresh(transaction)
 
+        await self._notify(
+            transaction,
+            buyer="🔄 Le transfert du canal a commencé.",
+            seller="🔄 Le transfert du canal a commencé.",
+        )
+
         return transaction
 
     # ============================================================
@@ -486,7 +311,244 @@ class TransactionService:
         await self.db.commit()
         await self.db.refresh(transaction)
 
+        await self._notify(
+            transaction,
+            buyer="🛡️ Transfert terminé. Vérifiez le canal : vous pouvez confirmer la réception ou ouvrir un litige pendant la période de protection.",
+            seller="🛡️ Transfert terminé. Vos fonds seront versés à la fin de la période de protection.",
+        )
+
         return transaction
+
+    # ============================================================
+    # NOTIFICATIONS TELEGRAM (acheteur / vendeur)
+    # ============================================================
+
+    async def _notify(
+        self,
+        transaction: Transaction,
+        *,
+        buyer: str | None = None,
+        seller: str | None = None,
+    ) -> None:
+        ref = transaction.reference
+
+        if buyer:
+            await notify_user_id(
+                self.db, transaction.buyer_id, f"{buyer}\n\nRéférence : {ref}"
+            )
+
+        if seller:
+            await notify_user_id(
+                self.db, transaction.seller_id, f"{seller}\n\nRéférence : {ref}"
+            )
+
+    # ============================================================
+    # PAIEMENT PAR WALLET (escrow)
+    # ============================================================
+    #
+    # Modèle : l'acheteur recharge son wallet (dépôt JessiKaPay), puis
+    # le prix est BLOQUÉ dans son wallet à l'achat. Il n'est versé au
+    # wallet du vendeur (moins la commission) qu'à la fin de la
+    # période de protection, ou remboursé en cas de litige.
+    # JessiKaPay ne sert qu'aux dépôts et aux retraits.
+
+    async def pay_with_wallet(
+        self,
+        *,
+        transaction_id: int,
+        buyer_id: int,
+    ) -> Transaction:
+
+        transaction = await self._get_transaction(
+            transaction_id,
+            lock=True,
+        )
+
+        if transaction.buyer_id != buyer_id:
+            raise TransactionServiceError(
+                "Seul l'acheteur peut payer cette transaction."
+            )
+
+        # Idempotence
+        if transaction.payment_status == "completed":
+            return transaction
+
+        if transaction.status != "pending_payment":
+            raise TransactionServiceError(
+                "Cette transaction n'attend plus de paiement."
+            )
+
+        amount = self._money(transaction.total_buyer_amount)
+        currency = transaction.currency.upper()
+
+        buyer_wallet = await self.wallet.get_wallet(buyer_id)
+        seller_wallet = await self.wallet.get_wallet(
+            transaction.seller_id
+        )
+
+        if (
+            buyer_wallet.currency.upper() != currency
+            or seller_wallet.currency.upper() != currency
+        ):
+            raise TransactionServiceError(
+                "La devise de l'annonce ne correspond pas à celle "
+                "des portefeuilles."
+            )
+
+        # Lève WalletServiceError("Solde insuffisant...") si besoin.
+        try:
+            await self.wallet.block(
+                user_id=buyer_id,
+                amount=amount,
+                reference=f"{transaction.reference}-HOLD",
+                description=(
+                    f"Fonds réservés pour {transaction.reference}"
+                ),
+            )
+        except DuplicateOperationError:
+            pass  # déjà bloqué lors d'un essai interrompu
+
+        now = self._now()
+
+        transaction.payment_provider = "wallet"
+        transaction.payment_status = "completed"
+        transaction.payment_confirmed_at = now
+        transaction.escrow_held = True
+        transaction.escrow_held_at = now
+        transaction.status = "waiting_admin"
+
+        await self.db.commit()
+        await self.db.refresh(transaction)
+
+        await self._notify(
+            transaction,
+            buyer="🛒 Achat confirmé : les fonds sont réservés. Un administrateur va organiser le transfert du canal.",
+            seller="💰 Nouvelle vente ! Les fonds de l'acheteur sont sécurisés. Un administrateur va vous contacter pour le transfert du canal.",
+        )
+
+        return transaction
+
+    async def purchase(
+        self,
+        *,
+        buyer_id: int,
+        listing_id: int,
+    ) -> Transaction:
+        """Création de la transaction + blocage des fonds, en un geste."""
+
+        transaction = await self.create_transaction(
+            buyer_id=buyer_id,
+            listing_id=listing_id,
+        )
+
+        try:
+            return await self.pay_with_wallet(
+                transaction_id=transaction.id,
+                buyer_id=buyer_id,
+            )
+        except Exception:
+            await self.db.rollback()
+
+            # Solde insuffisant, etc. : rien n'est bloqué, on annule
+            # et on remet l'annonce en vente.
+            try:
+                await self.cancel_transaction(
+                    transaction_id=transaction.id,
+                    user_id=buyer_id,
+                    notify=False,
+                )
+            except Exception:
+                await self.db.rollback()
+
+            raise
+
+    # ============================================================
+    # RÈGLEMENT / REMBOURSEMENT
+    # ============================================================
+
+    async def _settle_to_seller(
+        self,
+        transaction: Transaction,
+    ) -> None:
+        """
+        Consomme les fonds bloqués de l'acheteur, crédite le vendeur
+        (prix - commission) et enregistre la commission NexMarket.
+        Chaque mouvement a une référence unique : rejouable sans risque.
+        """
+
+        total = self._money(transaction.total_buyer_amount)
+        seller_amount = self._money(transaction.seller_amount)
+
+        try:
+            await self.wallet.consume_blocked(
+                user_id=transaction.buyer_id,
+                amount=total,
+                reference=f"{transaction.reference}-CONSUME",
+                description=(
+                    f"Paiement de {transaction.reference}"
+                ),
+            )
+        except DuplicateOperationError:
+            pass
+
+        try:
+            await self.wallet.credit(
+                user_id=transaction.seller_id,
+                amount=seller_amount,
+                reference=f"{transaction.reference}-SELLER",
+                operation_type="sale",
+                description=(
+                    f"Vente {transaction.reference}"
+                ),
+            )
+        except DuplicateOperationError:
+            pass
+
+        await self._record_platform_fee(transaction)
+
+        transaction.seller_paid_at = self._now()
+        transaction.escrow_held = False
+
+    async def _refund_escrow(
+        self,
+        transaction: Transaction,
+    ) -> None:
+        """Rend les fonds bloqués à l'acheteur."""
+
+        reference = f"{transaction.reference}-REFUND"
+
+        try:
+            await self.wallet.release_blocked(
+                user_id=transaction.buyer_id,
+                amount=self._money(transaction.total_buyer_amount),
+                reference=reference,
+                description=(
+                    f"Remboursement de {transaction.reference}"
+                ),
+            )
+        except DuplicateOperationError:
+            pass
+
+        transaction.escrow_held = False
+        transaction.refunded_at = self._now()
+        transaction.refund_reference = reference
+
+    async def _complete(
+        self,
+        transaction: Transaction,
+    ) -> None:
+        await self._settle_to_seller(transaction)
+
+        transaction.status = "completed"
+        transaction.completed_at = self._now()
+
+        # La chaîne est vendue : l'annonce sort de la marketplace.
+        listing = await self._get_listing(
+            transaction.listing_id,
+            lock=True,
+        )
+        listing.status = "sold"
+        listing.is_public = False
 
     # ============================================================
     # FINISH PROTECTION
@@ -517,192 +579,166 @@ class TransactionService:
                 "La période de protection n'est pas terminée."
             )
 
-        transaction.status = "completed"
+        await self._complete(transaction)
 
         await self.db.commit()
         await self.db.refresh(transaction)
 
+        await self._notify(
+            transaction,
+            buyer="✅ Transaction terminée. Merci d'utiliser NexMarket !",
+            seller="✅ Vente terminée : le montant (moins la commission) a été crédité sur votre portefeuille.",
+        )
+
         return transaction
 
-    # ============================================================
-    # PAY SELLER
-    # ============================================================
-
-    async def payout_seller(
+    async def confirm_receipt(
         self,
         *,
         transaction_id: int,
-        seller_jp_number: str,
-    ) -> dict:
+        user_id: int,
+    ) -> Transaction:
+        """L'acheteur confirme avoir reçu le canal : fonds libérés."""
 
         transaction = await self._get_transaction(
             transaction_id,
             lock=True,
         )
 
-        if transaction.status != "completed":
+        if transaction.buyer_id != user_id:
             raise TransactionServiceError(
-                "La transaction n'est pas terminée."
+                "Seul l'acheteur peut confirmer la réception."
             )
 
-        if transaction.seller_paid_at:
+        if transaction.status != "protection_period":
             raise TransactionServiceError(
-                "Le vendeur a déjà été payé."
+                "Le canal n'a pas encore été transféré."
             )
 
-        if transaction.currency.upper() != "XAF":
-            raise TransactionServiceError(
-                "Les payouts JessiKaPay sont actuellement "
-                "traités uniquement en XAF."
-            )
+        transaction.buyer_confirmed_at = self._now()
 
-        if not seller_jp_number.strip():
-            raise TransactionServiceError(
-                "Le numéro JessiKaPay du vendeur est obligatoire."
-            )
-
-        amount = self._money(
-            transaction.seller_amount
-        )
-
-        if amount <= 0:
-            raise TransactionServiceError(
-                "Montant vendeur invalide."
-            )
-
-        payout_reference = (
-            f"NMX-PAYOUT-{transaction.reference}"
-        )
-
-        # Ne pas lancer deux payouts pour la même transaction.
-        if transaction.jessikapay_payout_transaction_id:
-            raise TransactionServiceError(
-                "Un payout JessiKaPay existe déjà pour cette transaction."
-            )
-
-        try:
-            response = await self.jessikapay.create_payout(
-                jp_number=seller_jp_number.strip(),
-                amount=int(amount),
-                reference=payout_reference,
-                description=(
-                    f"Paiement vendeur NexMarket "
-                    f"{transaction.reference}"
-                ),
-            )
-
-        except JessiKaPayError as exc:
-            raise TransactionServiceError(
-                f"Impossible d'effectuer le payout : {exc}"
-            ) from exc
-
-        provider_transaction_id = response.get(
-            "transaction_id"
-        )
-
-        if not provider_transaction_id:
-            raise TransactionServiceError(
-                "JessiKaPay n'a pas retourné de transaction_id."
-            )
-
-        transaction.seller_payout_reference = (
-            payout_reference
-        )
-
-        transaction.jessikapay_payout_transaction_id = (
-            str(provider_transaction_id)
-        )
-
-        # IMPORTANT :
-        # seller_paid_at reste NULL.
-        #
-        # Le paiement est définitif uniquement après
-        # credit.completed.
+        await self._complete(transaction)
 
         await self.db.commit()
         await self.db.refresh(transaction)
 
-        return {
-            "transaction_id": transaction.id,
-            "reference": transaction.reference,
-            "payout_reference": payout_reference,
-            "provider_transaction_id": (
-                provider_transaction_id
-            ),
-            "amount": amount,
-            "status": "payout_sent",
-        }
+        await self._notify(
+            transaction,
+            buyer="✅ Réception confirmée. Merci !",
+            seller="✅ L'acheteur a confirmé la réception : le montant a été crédité sur votre portefeuille.",
+        )
 
-    # ============================================================
-    # CONFIRM SELLER PAYOUT
-    # ============================================================
+        return transaction
 
-    async def confirm_seller_payout(
-        self,
-        *,
-        provider_transaction_id: str,
-        amount: Decimal,
-        reference: str | None = None,
-    ) -> Transaction:
+    async def auto_finish_protections(self) -> int:
+        """
+        Clôture les transactions dont la protection est terminée sans
+        litige (appelée périodiquement par l'application).
+        """
 
         result = await self.db.execute(
-            select(Transaction)
-            .where(
-                Transaction.jessikapay_payout_transaction_id
-                == str(provider_transaction_id)
-            )
-            .with_for_update()
+            select(Transaction.id).where(
+                Transaction.status == "protection_period",
+                Transaction.protection_ends_at <= self._now(),
+            ).limit(50)
         )
 
-        transaction = result.scalar_one_or_none()
+        done = 0
 
-        if not transaction:
+        for (transaction_id,) in result.all():
+            try:
+                await self.finish_protection(transaction_id)
+                done += 1
+            except Exception:
+                await self.db.rollback()
+
+        return done
+
+    # ============================================================
+    # RÉSOLUTION ADMIN (litige / remboursement)
+    # ============================================================
+
+    async def resolve(
+        self,
+        *,
+        transaction_id: int,
+        action: str,
+        admin_id: int,
+        note: str | None = None,
+    ) -> Transaction:
+
+        transaction = await self._get_transaction(
+            transaction_id,
+            lock=True,
+        )
+
+        admin = await self._get_user(admin_id)
+
+        if not admin.is_admin:
+            raise TransactionServiceError("Accès administrateur requis.")
+
+        if action == "refund_buyer":
+            allowed = (
+                "waiting_admin",
+                "transfer_started",
+                "protection_period",
+                "disputed",
+            )
+        elif action == "release_seller":
+            allowed = ("protection_period", "disputed")
+        else:
+            raise TransactionServiceError("Action inconnue.")
+
+        if transaction.status not in allowed:
             raise TransactionServiceError(
-                "Transaction vendeur introuvable."
+                "Cette action n'est pas possible dans l'état "
+                f"« {transaction.status} »."
             )
 
-        # Idempotence
-        if transaction.seller_paid_at:
-            return transaction
-
-        expected_amount = self._money(
-            transaction.seller_amount
-        )
-
-        received_amount = self._money(
-            amount
-        )
-
-        if expected_amount != received_amount:
+        if not transaction.escrow_held:
             raise TransactionServiceError(
-                "Le montant du payout ne correspond pas "
-                "au montant vendeur."
+                "Les fonds de cette transaction ne sont plus "
+                "bloqués."
             )
 
-        if reference:
-            expected_reference = (
-                f"NMX-PAYOUT-{transaction.reference}"
+        if action == "refund_buyer":
+            await self._refund_escrow(transaction)
+            transaction.status = "refunded"
+
+            listing = await self._get_listing(
+                transaction.listing_id,
+                lock=True,
             )
+            if listing.status == "reserved":
+                listing.status = "published"
+        else:
+            await self._complete(transaction)
 
-            if reference != expected_reference:
-                raise TransactionServiceError(
-                    "La référence du payout est incorrecte."
-                )
-
-        transaction.seller_paid_at = self._now()
-
-        transaction.escrow_held = False
-
-        # --------------------------------------------------------
-        # ENREGISTRER LA COMMISSION NEXMARKET
-        # --------------------------------------------------------
-
-        await self._record_platform_fee(
-            transaction
+        transaction.dispute_resolved_at = self._now()
+        transaction.assigned_admin_id = (
+            transaction.assigned_admin_id or admin.id
         )
+
+        if note:
+            transaction.admin_note = (
+                ((transaction.admin_note or "") + "\n" + note).strip()
+            )
 
         await self.db.commit()
         await self.db.refresh(transaction)
+
+        if transaction.status == "refunded":
+            await self._notify(
+                transaction,
+                buyer="↩️ Litige résolu : vous avez été remboursé.",
+                seller="↩️ Litige résolu en faveur de l'acheteur : la transaction est remboursée.",
+            )
+        else:
+            await self._notify(
+                transaction,
+                buyer="✅ Litige résolu : la transaction est conclue.",
+                seller="✅ Litige résolu en votre faveur : le montant a été crédité sur votre portefeuille.",
+            )
 
         return transaction
 
@@ -821,7 +857,8 @@ class TransactionService:
             amount=fee,
             currency=currency,
             description=(
-                f"Commission NexMarket de 5 % "
+                f"Commission NexMarket de "
+                f"{Decimal(str(transaction.platform_fee_rate)) * 100:.2f} % "
                 f"sur la transaction {transaction.reference}"
             ),
         )
@@ -857,12 +894,19 @@ class TransactionService:
                 "Vous ne participez pas à cette transaction."
             )
 
-        if transaction.status in (
-            "cancelled",
-            "refunded",
+        if transaction.status not in (
+            "waiting_admin",
+            "transfer_started",
+            "protection_period",
         ):
             raise TransactionServiceError(
-                "Cette transaction est déjà clôturée."
+                "Un litige ne peut être ouvert que sur une transaction "
+                "payée et pas encore clôturée."
+            )
+
+        if transaction.seller_paid_at:
+            raise TransactionServiceError(
+                "Le vendeur a déjà été payé : litige impossible."
             )
 
         if not reason.strip():
@@ -877,6 +921,12 @@ class TransactionService:
         await self.db.commit()
         await self.db.refresh(transaction)
 
+        await self._notify(
+            transaction,
+            buyer="⚠️ Un litige a été ouvert. Un administrateur va examiner la situation.",
+            seller="⚠️ Un litige a été ouvert. Un administrateur va examiner la situation.",
+        )
+
         return transaction
 
     # ============================================================
@@ -888,8 +938,8 @@ class TransactionService:
         *,
         transaction_id: int,
         user_id: int,
+        notify: bool = True,
     ) -> Transaction:
-
         transaction = await self._get_transaction(
             transaction_id,
             lock=True,
@@ -903,13 +953,19 @@ class TransactionService:
                 "Accès refusé."
             )
 
+        # Avant le début du transfert, rien n'a été livré : on peut
+        # annuler et rembourser. Ensuite il faut passer par un litige.
         if transaction.status not in (
             "pending_payment",
             "waiting_admin",
         ):
             raise TransactionServiceError(
-                "Cette transaction ne peut plus être annulée."
+                "Cette transaction ne peut plus être annulée. "
+                "Ouvrez un litige pour être remboursé."
             )
+
+        if transaction.escrow_held:
+            await self._refund_escrow(transaction)
 
         transaction.status = "cancelled"
         transaction.cancelled_at = self._now()
@@ -926,4 +982,56 @@ class TransactionService:
         await self.db.commit()
         await self.db.refresh(transaction)
 
+        if notify:
+            await self._notify(
+                transaction,
+                buyer="❌ Transaction annulée." + (" Vos fonds ont été libérés." if transaction.refunded_at else ""),
+                seller="❌ La transaction a été annulée ; votre annonce est de nouveau en vente.",
+            )
+
         return transaction
+
+    # ============================================================
+    # EXPIRATION DES RÉSERVATIONS NON PAYÉES
+    # ============================================================
+
+    async def expire_unpaid(self, ttl_minutes: int) -> int:
+        """
+        Annule les transactions jamais payées et libère l'annonce
+        (sinon un utilisateur pourrait bloquer une annonce à vie).
+        """
+
+        limit = self._now() - timedelta(minutes=ttl_minutes)
+
+        result = await self.db.execute(
+            select(Transaction)
+            .where(
+                Transaction.status == "pending_payment",
+                Transaction.payment_status != "completed",
+                Transaction.created_at < limit,
+            )
+            .with_for_update(skip_locked=True)
+        )
+
+        count = 0
+
+        for transaction in result.scalars().all():
+            transaction.status = "cancelled"
+            transaction.cancelled_at = self._now()
+            transaction.cancellation_reason = (
+                "Expirée : paiement non reçu à temps."
+            )
+
+            listing = await self._get_listing(
+                transaction.listing_id,
+                lock=True,
+            )
+
+            if listing.status == "reserved":
+                listing.status = "published"
+
+            count += 1
+
+        await self.db.commit()
+
+        return count

@@ -1,6 +1,74 @@
 from __future__ import annotations
 
-from app.services.telegram_service import TelegramService
+import asyncio
+import logging
+
+from sqlalchemy import select
+
+from app.models.user import User
+from app.services.telegram_service import (
+    TelegramService,
+    get_telegram_service,
+)
+
+logger = logging.getLogger("nexmarket.notify")
+
+_background_tasks: set[asyncio.Task] = set()
+
+
+async def _send(telegram_id: int, text: str) -> None:
+    try:
+        await asyncio.wait_for(
+            get_telegram_service().send_message(
+                chat_id=telegram_id,
+                text=text,
+            ),
+            timeout=10,
+        )
+    except Exception as exc:
+        # Une notification ratée ne doit JAMAIS casser un achat.
+        logger.warning(
+            "Notification Telegram non envoyée (%s) : %s",
+            telegram_id,
+            exc,
+        )
+
+
+def notify_telegram(telegram_id: int | None, text: str) -> None:
+    """Envoi non bloquant et sans exception (best effort)."""
+
+    if not telegram_id:
+        return
+
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _send(telegram_id, text)
+        )
+    except RuntimeError:
+        return
+
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def notify_user_id(db, user_id: int | None, text: str) -> None:
+    """Prévient un utilisateur à partir de son id NexMarket."""
+
+    if not user_id:
+        return
+
+    try:
+        telegram_id = (
+            await db.execute(
+                select(User.telegram_id).where(User.id == user_id)
+            )
+        ).scalar_one_or_none()
+    except Exception as exc:
+        logger.warning("Notification : utilisateur illisible : %s", exc)
+        return
+
+    notify_telegram(telegram_id, text)
+
 
 
 class NotificationService:

@@ -11,7 +11,19 @@ from app.config import settings
 
 
 class JessiKaPayError(Exception):
-    """Erreur liée à l'API JessiKaPay."""
+    """
+    Erreur liée à l'API JessiKaPay.
+
+    ambiguous=True signifie que l'issue est INCONNUE (timeout, erreur
+    réseau, réponse 5xx) : le prestataire a peut-être quand même traité
+    la demande. Dans ce cas il ne faut jamais rendre l'argent à
+    l'utilisateur automatiquement (risque de double paiement) : il faut
+    réconcilier avec le prestataire.
+    """
+
+    def __init__(self, message: str = "", *, ambiguous: bool = False):
+        super().__init__(message)
+        self.ambiguous = ambiguous
 
 
 class JessiKaPayService:
@@ -91,14 +103,16 @@ class JessiKaPayService:
 
         except httpx.RequestError as exc:
             raise JessiKaPayError(
-                f"Impossible de contacter JessiKaPay: {exc}"
+                f"Impossible de contacter JessiKaPay: {exc}",
+                ambiguous=True,
             ) from exc
 
         if response.status_code >= 400:
             raise JessiKaPayError(
                 "JessiKaPay HTTP "
                 f"{response.status_code}: "
-                f"{response.text[:500]}"
+                f"{response.text[:500]}",
+                ambiguous=response.status_code >= 500,
             )
 
         try:
@@ -107,7 +121,8 @@ class JessiKaPayService:
         except ValueError as exc:
             raise JessiKaPayError(
                 "JessiKaPay a retourné une réponse "
-                "JSON invalide."
+                "JSON invalide.",
+                ambiguous=True,
             ) from exc
 
     # ========================================================
@@ -190,6 +205,73 @@ class JessiKaPayService:
                 "/external/v1/payout/lookup/"
                 f"{jp_number}"
             ),
+        )
+
+    # ========================================================
+    # MÉTHODES UTILISÉES PAR LES SERVICES MÉTIER
+    # (les services appelaient des noms qui n'existaient pas)
+    # ========================================================
+
+    async def create_deposit_request(
+        self,
+        *,
+        telegram_id: int | str,
+        name: str,
+        phone: str,
+        amount: int,
+        reference: str,
+    ):
+        return await self.create_deposit(
+            {
+                "telegram_id": str(telegram_id),
+                "name": name,
+                "phone": phone,
+                "amount": amount,
+                "reference": reference,
+            }
+        )
+
+    async def get_deposit_status(self, request_id: str):
+        return await self.get_deposit(request_id)
+
+    async def create_payment_request(
+        self,
+        *,
+        jp_number: str,
+        amount: int,
+        reference: str,
+        description: str,
+    ):
+        # ATTENTION : les clés ci-dessous sont déduites du reste du
+        # code. Vérifiez-les avec la documentation JessiKaPay
+        # (endpoint /external/v1/payment-request).
+        payload = {
+            "jp_number": jp_number,
+            "amount": amount,
+            "reference": reference,
+            "description": description,
+        }
+
+        if settings.JESSIKAPAY_WEBHOOK_URL:
+            payload["webhook_url"] = settings.JESSIKAPAY_WEBHOOK_URL
+
+        return await self.create_payment(payload)
+
+    async def create_payout(
+        self,
+        *,
+        jp_number: str,
+        amount: int,
+        reference: str,
+        description: str,
+    ):
+        return await self.payout(
+            {
+                "jp_number": jp_number,
+                "amount": amount,
+                "reference": reference,
+                "description": description,
+            }
         )
 
 

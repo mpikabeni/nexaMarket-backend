@@ -257,3 +257,21 @@ class TelegramService:
             chat_id=telegram_user_id,
             text=text,
         )
+
+
+# ============================================================
+# INSTANCE PARTAGÉE
+# ============================================================
+# Avant, chaque requête créait un nouveau Bot (donc une nouvelle
+# session HTTP) qui n'était jamais fermé : fuite de connexions.
+
+_shared_instance: TelegramService | None = None
+
+
+def get_telegram_service() -> TelegramService:
+    global _shared_instance
+
+    if _shared_instance is None:
+        _shared_instance = TelegramService()
+
+    return _shared_instance

@@ -112,7 +112,6 @@ class DepositService:
         *,
         user_id: int,
         amount: Decimal,
-        country: str,
         phone: str,
         currency: str = "XAF",
     ) -> Deposit:
@@ -121,7 +120,6 @@ class DepositService:
 
         amount = self._money(amount)
         currency = currency.upper().strip()
-        country = country.upper().strip()
         phone = phone.strip()
 
         if amount <= 0:
@@ -134,10 +132,6 @@ class DepositService:
                 "Les dépôts sont actuellement disponibles uniquement en XAF."
             )
 
-        if not country:
-            raise DepositServiceError(
-                "Le pays est obligatoire."
-            )
 
         if not phone:
             raise DepositServiceError(
@@ -155,7 +149,6 @@ class DepositService:
                         or user.username
                         or f"User {user.telegram_id}"
                     ),
-                    country=country,
                     phone=phone,
                     amount=int(amount),
                     reference=reference,
@@ -179,7 +172,6 @@ class DepositService:
             reference=reference,
             amount=amount,
             currency=currency,
-            country=country,
             phone=phone,
             jessikapay_request_id=str(request_id),
             jessikapay_code=response.get("code"),
