@@ -1,255 +1,91 @@
+# =========================================================
+# NEXMARKET - render.yaml (corrigé)
+#
+# Changements :
+#  - suppression du service "worker" : main.py lance DÉJÀ le bot en
+#    polling ; deux processus sur le même token => erreur Telegram
+#    409 Conflict. (De plus `python bot.py` visait un fichier qui
+#    n'existe pas à la racine : le worker ne pouvait pas démarrer.)
+#  - suppression des variables MONEYFUSION_* (fournisseur jamais lu
+#    par le code) ;
+#  - ajout des variables JESSIKAPAY_*, ADMIN_TELEGRAM_ID,
+#    JESSIKAPAY_WEBHOOK_SECRET qui manquaient ;
+#  - nom du service aligné sur l'URL appelée par le frontend.
+# =========================================================
+
 services:
-
-  # =======================================================
-  # NEXMARKET API
-  # =======================================================
-
   - type: web
-    name: nexmarket-api
+    # Le nom du service détermine l'URL publique : le frontend appelle
+    # https://nexamarket-backend.onrender.com (nom aligné ici).
+    name: nexamarket-backend
     runtime: docker
     rootDir: backend
-
     healthCheckPath: /health
-
     envVars:
-
-      # ---------------------------------------------------
-      # APPLICATION
-      # ---------------------------------------------------
-
       - key: APP_NAME
         value: NexMarket API
-
       - key: APP_VERSION
         value: 1.0.0
-
       - key: ENVIRONMENT
         value: production
-
       - key: FRONTEND_URL
         value: https://nexamarketf.netlify.app
-
-
-      # ---------------------------------------------------
-      # DATABASE
-      # ---------------------------------------------------
+      - key: CORS_ORIGINS
+        value: https://nexamarketf.netlify.app
 
       - key: DATABASE_URL
         fromDatabase:
           name: nexmarket-db
           property: connectionString
 
-
-      # ---------------------------------------------------
-      # TELEGRAM
-      # ---------------------------------------------------
-
+      # --- Telegram ---
       - key: TELEGRAM_BOT_TOKEN
         sync: false
-
       - key: TELEGRAM_BOT_USERNAME
         sync: false
-
       - key: TELEGRAM_WEBHOOK_SECRET
         sync: false
 
-
-      # ---------------------------------------------------
-      # SECURITY
-      # ---------------------------------------------------
-
+      # --- Sécurité / admin ---
       - key: JWT_SECRET
         generateValue: true
-
       - key: JWT_ALGORITHM
         value: HS256
-
-      - key: ADMIN_TOKEN_EXPIRE_MINUTES
-        value: 60
-
       - key: ADMIN_CODE
         sync: false
+      - key: ADMIN_TELEGRAM_ID
+        sync: false
 
-
-      # ---------------------------------------------------
-      # NEXMARKET
-      # ---------------------------------------------------
-
+      # --- Commission / escrow ---
       - key: NEXMARKET_FEE_RATE
         value: 0.05
-
-      - key: LISTING_PUBLISH_FEE
-        value: 0.0
-
-      - key: DEFAULT_CURRENCY
-        value: XAF
-
-
-      # ---------------------------------------------------
-      # MONEY FUSION
-      # ---------------------------------------------------
-
-      - key: MONEYFUSION_API_URL
-        sync: false
-
-      - key: MONEYFUSION_RETURN_URL
-        value: https://nexamarketf.netlify.app/
-
-      - key: MONEYFUSION_PAYIN_WEBHOOK_URL
-        sync: false
-
-      - key: MONEYFUSION_API_KEY
-        sync: false
-
-      - key: MONEYFUSION_WITHDRAW_URL
-        value: https://pay.moneyfusion.net/api/v1/withdraw
-
-      - key: MONEYFUSION_WITHDRAW_METHODS_URL
-        value: https://pay.moneyfusion.net/api/v1/withdraw/methods
-
-      - key: MONEYFUSION_PAYOUT_WEBHOOK_URL
-        sync: false
-
-      - key: MONEYFUSION_PAYMENT_STATUS_URL
-        value: https://pay.moneyfusion.net/paiementNotif
-
-
-      # ---------------------------------------------------
-      # CORS
-      # ---------------------------------------------------
-
-      - key: CORS_ORIGINS
-        value: https://nexamarketf.netlify.app
-
-
-  # =======================================================
-  # NEXMARKET TELEGRAM BOT
-  # =======================================================
-
-  - type: worker
-    name: nexmarket-bot
-    runtime: docker
-    rootDir: backend
-
-    dockerCommand: python bot.py
-
-    envVars:
-
-      # ---------------------------------------------------
-      # APPLICATION
-      # ---------------------------------------------------
-
-      - key: APP_NAME
-        value: NexMarket Bot
-
-      - key: APP_VERSION
-        value: 1.0.0
-
-      - key: ENVIRONMENT
-        value: production
-
-
-      # ---------------------------------------------------
-      # DATABASE
-      # ---------------------------------------------------
-
-      - key: DATABASE_URL
-        fromDatabase:
-          name: nexmarket-db
-          property: connectionString
-
-
-      # ---------------------------------------------------
-      # TELEGRAM
-      # ---------------------------------------------------
-
-      - key: TELEGRAM_BOT_TOKEN
-        sync: false
-
-      - key: TELEGRAM_BOT_USERNAME
-        sync: false
-
-      - key: TELEGRAM_WEBHOOK_SECRET
-        sync: false
-
-
-      # ---------------------------------------------------
-      # SECURITY
-      # ---------------------------------------------------
-
-      - key: JWT_SECRET
-        fromService:
-          type: web
-          name: nexmarket-api
-          envVarKey: JWT_SECRET
-
-      - key: JWT_ALGORITHM
-        value: HS256
-
-      - key: ADMIN_TOKEN_EXPIRE_MINUTES
+      - key: ESCROW_PROTECTION_MINUTES
         value: 60
+      - key: PENDING_PAYMENT_TTL_MINUTES
+        value: 120
 
-      - key: ADMIN_CODE
+      # --- JessiKaPay ---
+      - key: JESSIKAPAY_API_URL
         sync: false
-
-
-      # ---------------------------------------------------
-      # NEXMARKET
-      # ---------------------------------------------------
-
-      - key: NEXMARKET_FEE_RATE
-        value: 0.05
-
-      - key: LISTING_PUBLISH_FEE
-        value: 0.0
-
-      - key: DEFAULT_CURRENCY
-        value: XAF
-
-
-      # ---------------------------------------------------
-      # MONEY FUSION
-      # ---------------------------------------------------
-
-      - key: MONEYFUSION_API_URL
+      - key: JESSIKAPAY_API_KEY
         sync: false
-
-      - key: MONEYFUSION_RETURN_URL
-        value: https://nexamarketf.netlify.app/
-
-      - key: MONEYFUSION_PAYIN_WEBHOOK_URL
+      - key: JESSIKAPAY_API_SECRET
         sync: false
-
-      - key: MONEYFUSION_API_KEY
+      - key: NEXA_JP_NUMBER
         sync: false
-
-      - key: MONEYFUSION_WITHDRAW_URL
-        value: https://pay.moneyfusion.net/api/v1/withdraw
-
-      - key: MONEYFUSION_WITHDRAW_METHODS_URL
-        value: https://pay.moneyfusion.net/api/v1/withdraw/methods
-
-      - key: MONEYFUSION_PAYOUT_WEBHOOK_URL
+      # URL à donner à JessiKaPay :
+      #   https://nexamarket-backend.onrender.com/api/webhooks/jessikapay
+      # (événements utilisés : deposit.completed et credit.completed)
+      # + le même secret en en-tête X-Webhook-Secret (ou ?token=...)
+      - key: JESSIKAPAY_WEBHOOK_URL
         sync: false
-
-      - key: MONEYFUSION_PAYMENT_STATUS_URL
-        value: https://pay.moneyfusion.net/paiementNotif
-
-      # ---------------------------------------------------
-      # CORS
-      # ---------------------------------------------------
-
-      - key: CORS_ORIGINS
-        value: https://nexamarketf.netlify.app
-
-
-# =========================================================
-# POSTGRESQL
-# =========================================================
+      - key: JESSIKAPAY_WEBHOOK_SECRET
+        sync: false
 
 databases:
-
   - name: nexmarket-db
     databaseName: nexmarket
     user: nexmarket
+    # ATTENTION : l'offre "free" de Render supprime la base après
+    # une durée limitée. Passez à une offre payante avant la prod.
     plan: free

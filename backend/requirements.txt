@@ -9,10 +9,10 @@ fastapi==0.115.14
 uvicorn[standard]==0.34.3
 
 # -------------------------
-# DATABASE
+# DATABASE (driver asynchrone : asyncpg)
 # -------------------------
 SQLAlchemy==2.0.41
-psycopg[binary]==3.2.9
+asyncpg==0.30.0
 
 # -------------------------
 # CONFIGURATION
@@ -40,6 +40,3 @@ python-telegram-bot==22.8
 # FILE UPLOADS
 # -------------------------
 python-multipart==0.0.20
-
-
-asyncpg==0.30.0
