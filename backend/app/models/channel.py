@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -31,7 +32,7 @@ class Channel(Base):
     # ========================================================
 
     telegram_channel_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         nullable=False,
         unique=True,
         index=True,
@@ -83,7 +84,7 @@ class Channel(Base):
     # les réponses publiques du marketplace.
 
     owner_telegram_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         nullable=False,
     )
 

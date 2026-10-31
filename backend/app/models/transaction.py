@@ -3,10 +3,15 @@
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text
+from datetime import timezone
+from sqlalchemy import BigInteger, Boolean, DateTime, ForeignKey, Numeric, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db import Base
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
 
 
 class Transaction(Base):
@@ -127,21 +132,84 @@ class Transaction(Base):
     )
 
     # =========================================================
+    # COMMISSION / PROVIDER / ESCROW / PAYOUT (champs utilisés
+    # par TransactionService et l'admin)
+    # =========================================================
+
+    platform_fee_rate: Mapped[Decimal] = mapped_column(
+        Numeric(8, 6),
+        default=Decimal("0.050000"),
+        nullable=False,
+    )
+
+    escrow_held: Mapped[bool] = mapped_column(
+        Boolean,
+        default=False,
+        nullable=False,
+    )
+
+    escrow_held_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    protection_ends_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    buyer_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    disputed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    dispute_resolved_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    seller_paid_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    nexmarket_fee_recorded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    refunded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    refund_reference: Mapped[str | None] = mapped_column(
+        String(255),
+        nullable=True,
+    )
+
+    # =========================================================
     # TELEGRAM TRANSFER
     # =========================================================
 
     telegram_chat_id: Mapped[int | None] = mapped_column(
+        BigInteger,
         nullable=True,
         index=True,
     )
 
     transfer_started_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
     transfer_completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
@@ -169,35 +237,35 @@ class Transaction(Base):
     # =========================================================
 
     created_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
+        DateTime(timezone=True),
+        default=_utcnow,
         nullable=False,
     )
 
     payment_confirmed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
     assigned_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
     completed_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
     cancelled_at: Mapped[datetime | None] = mapped_column(
-        DateTime,
+        DateTime(timezone=True),
         nullable=True,
     )
 
     updated_at: Mapped[datetime] = mapped_column(
-        DateTime,
-        default=datetime.utcnow,
-        onupdate=datetime.utcnow,
+        DateTime(timezone=True),
+        default=_utcnow,
+        onupdate=_utcnow,
         nullable=False,
     )
 

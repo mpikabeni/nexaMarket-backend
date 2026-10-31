@@ -11,7 +11,6 @@ class Deposit(Base):
     reference: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18,2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="XAF", nullable=False)
-    country: Mapped[str] = mapped_column(String(10), default="CG", nullable=False)
     phone: Mapped[str] = mapped_column(String(40), nullable=False)
     jessikapay_request_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     jessikapay_code: Mapped[str | None] = mapped_column(String(255))

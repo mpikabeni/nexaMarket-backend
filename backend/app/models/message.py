@@ -1,6 +1,7 @@
 from datetime import datetime
 
 from sqlalchemy import (
+    BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
@@ -56,7 +57,7 @@ class Message(Base):
     # Ne jamais l'exposer dans l'API publique.
 
     sender_telegram_id: Mapped[int] = mapped_column(
-        Integer,
+        BigInteger,
         nullable=False,
     )
 

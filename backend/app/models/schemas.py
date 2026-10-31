@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 # ============================================================
@@ -84,10 +85,23 @@ class WalletOperationResponse(APIModel):
 
 
 class ChannelCreate(BaseModel):
-    telegram_channel_id: int
-    telegram_username: str | None = None
-    title: str
-    description: str | None = None
+    # L'utilisateur donne simplement le @username (ou le lien) du canal ;
+    # l'identifiant numérique Telegram est résolu par le backend.
+    telegram_channel_id: int | None = None
+    username: str | None = Field(default=None, max_length=200)
+    telegram_username: str | None = Field(default=None, max_length=200)
+    description: str | None = Field(default=None, max_length=5000)
+
+    @model_validator(mode="after")
+    def _need_channel_reference(self):
+        if (
+            self.telegram_channel_id is None
+            and not (self.username or self.telegram_username)
+        ):
+            raise ValueError(
+                "Indiquez le @username du canal."
+            )
+        return self
 
 
 class ChannelResponse(APIModel):
@@ -140,8 +154,8 @@ class ListingCreate(BaseModel):
         max_length=10,
     )
 
-    title: str = Field(
-        ...,
+    title: str | None = Field(
+        default=None,
         min_length=3,
         max_length=255,
     )
@@ -245,7 +259,6 @@ class TransactionResponse(APIModel):
 
     payment_provider: str | None = None
     payment_reference: str | None = None
-    jessikapay_request_id: str | None = None
     payment_status: str | None = None
     payment_confirmed_at: datetime | None = None
 
@@ -263,8 +276,6 @@ class TransactionResponse(APIModel):
     dispute_resolved_at: datetime | None = None
 
     seller_paid_at: datetime | None = None
-    seller_payout_reference: str | None = None
-    jessikapay_payout_transaction_id: str | None = None
 
     nexmarket_fee_recorded_at: datetime | None = None
 
@@ -272,10 +283,35 @@ class TransactionResponse(APIModel):
     refunded_at: datetime | None = None
     refund_reference: str | None = None
 
-    admin_notes: str | None = None
-
     created_at: datetime
     updated_at: datetime
+
+    # Champs d'affichage ajoutés par la route (pas des colonnes).
+    listing_title: str | None = None
+    buyer_name: str | None = None
+    seller_name: str | None = None
+
+
+class DisputeRequest(BaseModel):
+    reason: str = Field(
+        ...,
+        min_length=5,
+        max_length=3000,
+    )
+
+
+class ResolveRequest(BaseModel):
+    action: Literal["refund_buyer", "release_seller"]
+    note: str | None = Field(default=None, max_length=3000)
+
+
+class ReportResolveRequest(BaseModel):
+    resolution: str = Field(..., min_length=3, max_length=3000)
+    result_status: Literal["resolved", "rejected"] = "resolved"
+
+
+class RejectRequest(BaseModel):
+    reason: str = Field(..., min_length=3, max_length=2000)
 
 
 class TransactionAdminAction(BaseModel):
@@ -440,12 +476,6 @@ class DepositRequest(BaseModel):
         decimal_places=2,
     )
 
-    country: str = Field(
-        ...,
-        min_length=2,
-        max_length=10,
-    )
-
     phone: str = Field(
         ...,
         min_length=3,
@@ -465,7 +495,6 @@ class DepositResponse(APIModel):
 
     amount: Decimal
     currency: str
-    country: str
 
     status: str
 
