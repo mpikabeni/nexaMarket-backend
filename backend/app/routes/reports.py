@@ -6,7 +6,7 @@ from sqlalchemy import select
 from app.deps import CurrentUser, DBSession
 from app.models.report import Report
 from app.models.transaction import Transaction
-from app.models.schemas import ReportCreate
+from app.models.schemas import ReportCreate, ReportResolveRequest
 
 
 router = APIRouter(
@@ -153,11 +153,20 @@ async def create_report(
 
     # Si ce signalement devient le litige principal
     # de la transaction, on conserve aussi son état.
-    if transaction.status not in {
-        "completed",
-        "cancelled",
-        "refunded",
-    }:
+    # Seules les transactions payées (fonds bloqués) et pas encore
+    # soldées peuvent passer en litige. Avant, un signalement sur une
+    # transaction non payée la bloquait pour toujours (annonce
+    # réservée à vie) car elle ne pouvait plus être annulée.
+    if (
+        transaction.status
+        in {
+            "waiting_admin",
+            "transfer_started",
+            "protection_period",
+        }
+        and transaction.escrow_held
+        and not transaction.seller_paid_at
+    ):
         transaction.status = "disputed"
         transaction.dispute_reason = reason
         transaction.disputed_at = (
@@ -417,10 +426,9 @@ async def assign_report(
 )
 async def resolve_report(
     report_id: int,
-    resolution: str,
+    payload: ReportResolveRequest,
     current_user: CurrentUser,
     db: DBSession,
-    result_status: str = "resolved",
 ):
     """
     Résout ou rejette un signalement.
@@ -429,6 +437,9 @@ async def resolve_report(
     - resolved
     - rejected
     """
+
+    resolution = payload.resolution
+    result_status = payload.result_status
 
     if not current_user.is_admin:
         raise HTTPException(
@@ -472,6 +483,12 @@ async def resolve_report(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Signalement introuvable.",
+        )
+
+    if report.status in {"resolved", "rejected"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Ce signalement est déjà clôturé.",
         )
 
     report.status = result_status

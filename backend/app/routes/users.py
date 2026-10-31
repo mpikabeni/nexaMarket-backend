@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, status
 
 from app.config import settings
+from app.services.wallet_service import WalletService
 from app.deps import CurrentUser, DBSession
 from app.models.schemas import UserResponse, UserUpdate
 
@@ -149,13 +150,10 @@ async def get_my_wallet(
     Retourne le wallet de l'utilisateur connecté.
     """
 
-    if current_user.wallet is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Wallet introuvable.",
-        )
-
-    wallet = current_user.wallet
+    # Avant : `current_user.wallet` (relation chargée paresseusement)
+    # lève MissingGreenlet en contexte async => erreur 500.
+    # Le wallet est lu (ou créé s'il manque) via le service.
+    wallet = await WalletService(db).get_wallet(current_user.id)
 
     return {
         "id": wallet.id,

@@ -1,3 +1,4 @@
+import re
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, status
@@ -7,6 +8,7 @@ from app.deps import CurrentUser, DBSession
 from app.models.channel import Channel
 from app.models.schemas import ChannelCreate
 from app.services.telegram_service import (
+    get_telegram_service,
     TelegramService,
     TelegramServiceError,
 )
@@ -77,6 +79,30 @@ def serialize_channel(
     return data
 
 
+USERNAME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{4,31}$")
+
+
+def normalize_username(raw: str) -> str:
+    """Accepte @nom, nom, t.me/nom ou https://t.me/nom."""
+
+    value = (raw or "").strip()
+
+    value = re.sub(r"^https?://", "", value, flags=re.I)
+    value = re.sub(r"^(www\.)?(t|telegram)\.me/", "", value, flags=re.I)
+    value = value.split("?")[0].strip("/").lstrip("@")
+
+    if not USERNAME_RE.fullmatch(value):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Username de canal invalide. Exemple : @moncanal "
+                "(canal public requis)."
+            ),
+        )
+
+    return value
+
+
 # ============================================================
 # SUBMIT CHANNEL
 # ============================================================
@@ -100,7 +126,32 @@ async def submit_channel(
     - que l'utilisateur connecté est réellement OWNER ;
     """
 
-    telegram_service = TelegramService()
+    telegram_service = get_telegram_service()
+
+    # --------------------------------------------------------
+    # Résoudre l'identifiant numérique à partir du @username
+    # (l'utilisateur ne connaît pas l'ID -100... de son canal)
+    # --------------------------------------------------------
+
+    channel_id = payload.telegram_channel_id
+
+    if channel_id is None:
+        username = normalize_username(
+            payload.username or payload.telegram_username
+        )
+
+        try:
+            chat = await telegram_service.get_channel(f"@{username}")
+        except TelegramServiceError as exc:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=(
+                    "Canal introuvable. Vérifiez le @username et "
+                    "ajoutez le bot NexMarket comme administrateur."
+                ),
+            ) from exc
+
+        channel_id = chat.id
 
     # --------------------------------------------------------
     # Vérifier la chaîne Telegram
@@ -109,16 +160,35 @@ async def submit_channel(
     try:
         verification = (
             await telegram_service.verify_channel_submission(
-                payload.telegram_channel_id,
+                channel_id,
                 current_user.telegram_id,
             )
         )
-
     except TelegramServiceError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+    # verify_channel_submission AVALE les erreurs Telegram et renvoie
+    # un objet vide avec `.error` : sans ce contrôle un canal non
+    # vérifié (titre vide) était enregistré, ou plantait en base.
+    if verification.error or not verification.title:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                verification.error
+                or "Impossible de vérifier ce canal Telegram."
+            ),
+        )
+
+    if not verification.owner_verified:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Seul le propriétaire du canal peut le mettre en vente."
+            ),
+        )
 
     # --------------------------------------------------------
     # Vérifier si la chaîne existe déjà
@@ -126,8 +196,7 @@ async def submit_channel(
 
     result = await db.execute(
         select(Channel).where(
-            Channel.telegram_channel_id
-            == payload.telegram_channel_id
+            Channel.telegram_channel_id == channel_id
         )
     )
 
@@ -200,9 +269,7 @@ async def submit_channel(
     # --------------------------------------------------------
 
     channel = Channel(
-        telegram_channel_id=(
-            payload.telegram_channel_id
-        ),
+        telegram_channel_id=channel_id,
         telegram_username=verification.username,
         title=verification.title,
         photo_url=verification.photo_url,
@@ -361,7 +428,7 @@ async def verify_channel(
             ),
         )
 
-    telegram_service = TelegramService()
+    telegram_service = get_telegram_service()
 
     try:
         verification = (
@@ -384,6 +451,18 @@ async def verify_channel(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(exc),
         ) from exc
+
+
+    # Même piège que pour la soumission : ne jamais écraser les données
+    # du canal avec un résultat vide quand Telegram a renvoyé une erreur.
+    if verification.error or not verification.title:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                verification.error
+                or "Impossible de vérifier ce canal Telegram."
+            ),
+        )
 
     channel.telegram_username = (
         verification.username

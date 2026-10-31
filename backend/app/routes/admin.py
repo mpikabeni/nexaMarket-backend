@@ -18,6 +18,10 @@ from app.config import settings
 from app.deps import CurrentAdmin, DBSession
 from app.models.channel import Channel
 from app.models.listing import Listing
+from app.services.notification_service import notify_user_id
+from app.models.message import Message
+from app.models.platform import PlatformWallet
+from app.models.schemas import RejectRequest
 from app.models.report import Report
 from app.models.transaction import Transaction
 from app.models.user import User
@@ -294,7 +298,7 @@ async def admin_dashboard(
                 [
                     "pending_payment",
                     "waiting_admin",
-                    "transfer_in_progress",
+                    "transfer_started",
                     "protection_period",
                     "disputed",
                 ]
@@ -313,7 +317,15 @@ async def admin_dashboard(
         )
     )
 
+    platform_balance = await db.scalar(
+        select(func.coalesce(func.sum(PlatformWallet.available_balance), 0))
+    )
+
     return {
+        "platform_wallet": {
+            "balance": platform_balance or 0,
+            "currency": "XAF",
+        },
         "users": users_count or 0,
         "channels": channels_count or 0,
         "pending_channels": pending_channels or 0,
@@ -574,7 +586,7 @@ async def approve_channel(
 @router.post("/channels/{channel_id}/reject")
 async def reject_channel(
     channel_id: int,
-    reason: str,
+    payload: RejectRequest,
     current_admin: CurrentAdmin,
     db: DBSession,
 ):
@@ -582,7 +594,7 @@ async def reject_channel(
     Rejette une chaîne.
     """
 
-    cleaned_reason = reason.strip()
+    cleaned_reason = payload.reason.strip()
 
     if not cleaned_reason:
         raise HTTPException(
@@ -713,13 +725,12 @@ async def approve_listing(
             detail="Chaîne associée introuvable.",
         )
 
-    if channel.verification_status != "approved":
+    # Le vendeur a soumis canal + annonce ensemble : valider l'annonce
+    # approuve aussi le canal (s'il n'a pas été rejeté).
+    if channel.verification_status not in ("submitted", "approved"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "La chaîne doit être approuvée "
-                "avant de publier l'annonce."
-            ),
+            detail="La chaîne associée n'est pas acceptable.",
         )
 
     if not channel.owner_verified:
@@ -751,8 +762,22 @@ async def approve_listing(
 
     channel.is_listed = True
 
+    if channel.verification_status != "approved":
+        channel.verification_status = "approved"
+        channel.verified_at = now
+        channel.verified_by_admin_id = current_admin.id
+        channel.rejection_reason = None
+        channel.is_active = True
+
     await db.commit()
     await db.refresh(listing)
+
+    await notify_user_id(
+        db,
+        listing.seller_id,
+        "✅ Votre annonce a été approuvée et est maintenant visible "
+        "sur NexMarket.",
+    )
 
     return {
         "status": "success",
@@ -770,7 +795,7 @@ async def approve_listing(
 @router.post("/listings/{listing_id}/reject")
 async def reject_listing(
     listing_id: int,
-    reason: str,
+    payload: RejectRequest,
     current_admin: CurrentAdmin,
     db: DBSession,
 ):
@@ -778,7 +803,7 @@ async def reject_listing(
     Rejette une annonce.
     """
 
-    cleaned_reason = reason.strip()
+    cleaned_reason = payload.reason.strip()
 
     if not cleaned_reason:
         raise HTTPException(
@@ -810,6 +835,13 @@ async def reject_listing(
 
     await db.commit()
     await db.refresh(listing)
+
+    await notify_user_id(
+        db,
+        listing.seller_id,
+        "❌ Votre annonce n'a pas été approuvée.\n\nMotif : "
+        + cleaned_reason,
+    )
 
     return {
         "status": "success",
@@ -1052,4 +1084,171 @@ async def admin_wallets(
             for wallet in wallets
         ],
         "count": len(wallets),
+    }
+
+
+# ============================================================
+# ADMIN : SESSION
+# ============================================================
+
+@router.get("/me")
+async def admin_me(current_admin: CurrentAdmin):
+    return {
+        "id": current_admin.id,
+        "telegram_id": current_admin.telegram_id,
+        "username": current_admin.username,
+        "is_admin": True,
+    }
+
+
+# ============================================================
+# ALL CHANNELS
+# ============================================================
+
+@router.get("/channels")
+async def list_all_channels(
+    current_admin: CurrentAdmin,
+    db: DBSession,
+    limit: int = 100,
+):
+    limit = max(1, min(limit, 200))
+
+    channels = (
+        await db.execute(
+            select(Channel)
+            .order_by(Channel.created_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    return {
+        "channels": [
+            {
+                "id": c.id,
+                "telegram_username": c.telegram_username,
+                "title": c.title,
+                "subscriber_count": c.subscriber_count,
+                "bot_is_admin": c.bot_is_admin,
+                "owner_verified": c.owner_verified,
+                "verification_status": c.verification_status,
+                "is_active": c.is_active,
+                "is_listed": c.is_listed,
+                "owner_id": c.owner_id,
+                "created_at": c.created_at,
+            }
+            for c in channels
+        ]
+    }
+
+
+# ============================================================
+# ONE LISTING (détail)
+# ============================================================
+
+@router.get("/listings/{listing_id}")
+async def get_listing_detail(
+    listing_id: int,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    row = (
+        await db.execute(
+            select(Listing, Channel)
+            .join(Channel, Listing.channel_id == Channel.id)
+            .where(Listing.id == listing_id)
+        )
+    ).first()
+
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Annonce introuvable.",
+        )
+
+    listing, channel = row
+
+    return {
+        "id": listing.id,
+        "title": listing.title,
+        "description": listing.description,
+        "category": listing.category,
+        "price": listing.price,
+        "currency": listing.currency,
+        "status": listing.status,
+        "is_public": listing.is_public,
+        "rejection_reason": listing.rejection_reason,
+        "seller_id": listing.seller_id,
+        "created_at": listing.created_at,
+        "channel": {
+            "id": channel.id,
+            "title": channel.title,
+            "telegram_username": channel.telegram_username,
+            "subscriber_count": channel.subscriber_count,
+            "bot_is_admin": channel.bot_is_admin,
+            "bot_permissions_verified": channel.bot_permissions_verified,
+            "owner_verified": channel.owner_verified,
+            "verification_status": channel.verification_status,
+        },
+    }
+
+
+# ============================================================
+# MESSAGES (supervision des discussions de transaction)
+# ============================================================
+
+@router.get("/messages")
+async def list_recent_messages(
+    current_admin: CurrentAdmin,
+    db: DBSession,
+    limit: int = 100,
+):
+    limit = max(1, min(limit, 200))
+
+    messages = (
+        await db.execute(
+            select(Message)
+            .where(Message.is_deleted.is_(False))
+            .order_by(Message.created_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    return {
+        "messages": [
+            {
+                "id": m.id,
+                "transaction_id": m.transaction_id,
+                "sender_id": m.sender_id,
+                "sender_role": m.sender_role,
+                "content": m.content,
+                "created_at": m.created_at,
+            }
+            for m in messages
+        ]
+    }
+
+
+# ============================================================
+# PLATFORM WALLET (commissions)
+# ============================================================
+
+@router.get("/platform-wallet")
+async def platform_wallet(
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    wallets = (
+        await db.execute(select(PlatformWallet))
+    ).scalars().all()
+
+    return {
+        "wallets": [
+            {
+                "currency": w.currency,
+                "available_balance": w.available_balance,
+                "total_revenue": w.total_revenue,
+                "total_fees_collected": w.total_fees_collected,
+            }
+            for w in wallets
+        ]
     }

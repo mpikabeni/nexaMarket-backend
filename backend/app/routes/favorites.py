@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import select, delete
 
 from app.deps import CurrentUser, DBSession
+from app.models.channel import Channel
 from app.models.favorite import Favorite
 from app.models.listing import Listing
 from app.models.schemas import FavoriteCreate
@@ -100,11 +101,18 @@ async def get_my_favorites(
     Retourne les annonces enregistrées dans les favoris.
     """
 
+    # Import local : évite un import circulaire avec le package routes.
+    from app.routes.listings import listing_to_dict
+
     result = await db.execute(
-        select(Favorite, Listing)
+        select(Favorite, Listing, Channel)
         .join(
             Listing,
             Listing.id == Favorite.listing_id,
+        )
+        .join(
+            Channel,
+            Channel.id == Listing.channel_id,
         )
         .where(
             Favorite.user_id == current_user.id
@@ -114,30 +122,19 @@ async def get_my_favorites(
         )
     )
 
-    rows = result.all()
-
     favorites = []
 
-    for favorite, listing in rows:
+    for favorite, listing, channel in result.all():
+        # Une annonce retirée de la publication reste dans les
+        # favoris mais n'est pas considérée comme disponible.
+        # On renvoie le même format que /listings (avec le canal),
+        # sinon la carte s'affichait sans nom ni abonnés.
+        item = listing_to_dict(listing, channel)
+        item["favorite_id"] = favorite.id
+        item["listing_id"] = listing.id
+        item["created_at"] = favorite.created_at.isoformat()
 
-        # Une annonce retirée de la publication reste
-        # dans les favoris mais n'est pas considérée
-        # comme disponible.
-        favorites.append(
-            {
-                "favorite_id": favorite.id,
-                "listing_id": listing.id,
-                "title": listing.title,
-                "description": listing.description,
-                "category": listing.category,
-                "price": listing.price,
-                "currency": listing.currency,
-                "status": listing.status,
-                "is_public": listing.is_public,
-                "published_at": listing.published_at,
-                "created_at": favorite.created_at,
-            }
-        )
+        favorites.append(item)
 
     return {
         "favorites": favorites,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -54,14 +55,19 @@ async def request_withdrawal(
         payload.get("jp_number", "")
     ).strip()
 
-    if not jp_number:
+    jp_number = jp_number.upper()
+
+    if not re.fullmatch(r"JP-\d{6}", jp_number):
         raise HTTPException(
             status_code=400,
-            detail="Numéro JessiKaPay requis.",
+            detail="Le numéro JessiKaPay doit être au format JP-222222.",
         )
 
     try:
         amount = Decimal(str(raw_amount))
+
+        if not amount.is_finite():
+            raise InvalidOperation
     except (InvalidOperation, ValueError):
         raise HTTPException(
             status_code=400,
@@ -76,6 +82,12 @@ async def request_withdrawal(
         raise HTTPException(
             status_code=400,
             detail="Le montant doit être supérieur à zéro.",
+        )
+
+    if amount != amount.to_integral_value():
+        raise HTTPException(
+            status_code=400,
+            detail="Le montant doit être un nombre entier (XAF).",
         )
 
     # ========================================================
@@ -173,8 +185,30 @@ async def request_withdrawal(
 
     except JessiKaPayError as exc:
 
-        # Libérer les fonds si JessiKaPay
-        # refuse ou échoue immédiatement.
+        # Timeout / erreur réseau / 5xx : JessiKaPay a PEUT-ÊTRE
+        # déjà payé. Rendre l'argent ici permettrait un double
+        # paiement. On garde les fonds bloqués et on laisse le
+        # webhook credit.completed (ou un admin) trancher.
+        if exc.ambiguous:
+            withdrawal.status = "processing"
+            withdrawal.processed_at = datetime.utcnow()
+            withdrawal.failure_reason = (
+                f"Statut inconnu, à vérifier : {exc}"
+            )
+            await db.commit()
+
+            return {
+                "success": True,
+                "id": withdrawal.id,
+                "reference": withdrawal.reference,
+                "provider": "jessikapay",
+                "status": withdrawal.status,
+                "message": (
+                    "Votre retrait est en cours de vérification."
+                ),
+            }
+
+        # Refus explicite (4xx) : on libère les fonds.
 
         try:
             await wallet_service.release_blocked(
@@ -241,7 +275,12 @@ async def request_withdrawal(
         ),
     }
 
-    # À ajouter dans app/routes/withdrawals.py
+
+# ============================================================
+# LOOKUP COMPTE JESSIKAPAY
+# ============================================================
+# (Avant : ce code était collé APRES le `return` de
+# request_withdrawal, donc jamais enregistré : l'URL renvoyait 404.)
 
 @router.get("/lookup/{jp_number}")
 async def lookup_jp(
@@ -249,9 +288,9 @@ async def lookup_jp(
     user: User = Depends(get_current_user),
 ):
     """Vérifie directement un compte JessiKaPay sans choisir de pays."""
+
     jp_number = jp_number.strip().upper()
 
-    import re
     if not re.fullmatch(r"JP-\d{6}", jp_number):
         raise HTTPException(
             status_code=400,
@@ -283,7 +322,8 @@ async def lookup_jp(
         "last_name": result.get("last_name") or "",
         "photo_url": result.get("photo_url") or "",
     }
-    
+
+
 # ============================================================
 # MY WITHDRAWALS
 # ============================================================

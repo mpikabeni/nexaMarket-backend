@@ -1,6 +1,9 @@
+from uuid import uuid4
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth import create_access_token, validate_telegram_init_data
@@ -50,19 +53,24 @@ async def authenticate_telegram(
     # ========================================================
 
     if user is None:
-        # Génération d'un Nexa ID interne/public
-        nexa_id = f"NX{telegram_id}"
+        # Nexa ID public : ALÉATOIRE. Avant il valait "NX<telegram_id>",
+        # ce qui exposait publiquement l'identifiant Telegram privé.
+        nexa_id = None
 
-        # Éviter une collision éventuelle
-        existing_nexa = await db.execute(
-            select(User).where(
-                User.nexa_id == nexa_id
+        for _ in range(5):
+            candidate = f"NX{uuid4().hex[:8].upper()}"
+
+            taken = await db.execute(
+                select(User.id).where(User.nexa_id == candidate)
             )
-        )
 
-        if existing_nexa.scalar_one_or_none() is not None:
+            if taken.first() is None:
+                nexa_id = candidate
+                break
+
+        if nexa_id is None:
             raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Impossible de créer l'identifiant Nexa.",
             )
 
@@ -81,23 +89,34 @@ async def authenticate_telegram(
 
         db.add(user)
 
-        await db.flush()
+        try:
+            await db.flush()
 
-        # ====================================================
-        # WALLET
-        # ====================================================
+            db.add(
+                Wallet(
+                    user_id=user.id,
+                    available_balance=0,
+                    blocked_balance=0,
+                    total_revenue=0,
+                    currency="XAF",
+                )
+            )
 
-        wallet = Wallet(
-            user_id=user.id,
-            available_balance=0,
-            blocked_balance=0,
-            total_revenue=0,
-            currency="XAF",
-        )
+            await db.commit()
 
-        db.add(wallet)
+        except IntegrityError:
+            # Deux premières connexions simultanées : l'autre requête
+            # a créé le compte entre-temps. On le relit.
+            await db.rollback()
 
-        await db.commit()
+            result = await db.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+
+            user = result.scalar_one_or_none()
+
+            if user is None:
+                raise
 
         await db.refresh(user)
 

@@ -1,293 +1,268 @@
 # backend/app/routes/listings.py
+#
+# Réécriture : l'ancienne version utilisait un "pont sync -> async" et
+# des colonnes qui n'existent plus dans les modèles (Channel.username,
+# Channel.telegram_verified, Listing.validated_by_id, ...), donc chaque
+# route plantait. Cette version est 100 % async et alignée sur les modèles.
+#
+# Cycle de vie d'une annonce :
+#   pending_review --(admin)--> published  --(achat)--> reserved --> sold
+#                 \--(admin)--> rejected
+#   (cancelled possible par le vendeur tant qu'elle n'est pas réservée)
 
 from __future__ import annotations
 
-from datetime import datetime
 from decimal import Decimal
 
-import functools
-
-import fastapi
-from sqlalchemy import func, or_
-from sqlalchemy.ext.asyncio import AsyncSession  # noqa: F401
-from sqlalchemy.orm import Session
+from fastapi import APIRouter, HTTPException, status
+from sqlalchemy import func, or_, select
 
 from app.config import settings
-from app.db import get_db
-from app.deps import get_current_user
+from app.deps import CurrentUser, DBSession
 from app.models.channel import Channel
 from app.models.listing import Listing
-from app.models.user import User
-from app.schemas import ListingCreate, ListingUpdate
+from app.models.schemas import ListingCreate, ListingUpdate
 
 
-router = fastapi.APIRouter(
+router = APIRouter(
     prefix="/listings",
     tags=["Listings"],
 )
 
-
-# ============================================================
-# PONT SYNC -> ASYNC
-# ============================================================
-# get_db fournit une AsyncSession : db.query(...) n'existe pas dessus
-# ("'AsyncSession' object has no attribute 'query'").
-# Ce décorateur exécute la route (écrite avec l'API Query classique)
-# sur la session synchrone sous-jacente via db.run_sync(...).
-# Défini ICI (même module) pour que FastAPI résolve bien les annotations.
-
-def sync_route(fn):
-    @functools.wraps(fn)
-    async def wrapper(*args, **kwargs):
-        async_db = kwargs["db"]
-
-        def call(session):
-            return fn(*args, **{**kwargs, "db": session})
-
-        return await async_db.run_sync(call)
-
-    return wrapper
-
+ACTIVE_STATUSES = ("pending_review", "published", "reserved")
 
 
 # ============================================================
-# OUTIL DE SERIALISATION
+# SÉRIALISATION PUBLIQUE
 # ============================================================
 
-def listing_to_dict(listing: Listing) -> dict:
-    """Sérialiseur PUBLIC : aucune donnée d'identité vendeur/interne."""
-    channel = listing.channel
+def listing_to_dict(listing: Listing, channel: Channel | None) -> dict:
+    """Aucune donnée d'identité vendeur / interne (ni owner_telegram_id)."""
+
     return {
         "id": listing.id,
         "channel_id": listing.channel_id,
+        "title": listing.title,
+        "category": listing.category,
         "price": float(listing.price),
         "currency": listing.currency,
         "description": listing.description,
         "status": listing.status,
-        "created_at": listing.created_at.isoformat() if listing.created_at else None,
-        "updated_at": listing.updated_at.isoformat() if listing.updated_at else None,
-        "channel": ({
-            "id": channel.id,
-            "title": channel.title,
-            "username": channel.username,
-            "description": channel.description,
-            "photo_url": channel.photo_url,
-            "category": channel.category,
-            "language": channel.language,
-            "subscribers_count": channel.subscribers_count,
-            "verified": bool(channel.telegram_verified and channel.bot_is_admin and channel.seller_is_admin),
-            "is_active": channel.is_active,
-        } if channel else None),
+        "is_public": listing.is_public,
+        "published_at": (
+            listing.published_at.isoformat()
+            if listing.published_at
+            else None
+        ),
+        "created_at": (
+            listing.created_at.isoformat() if listing.created_at else None
+        ),
+        "updated_at": (
+            listing.updated_at.isoformat() if listing.updated_at else None
+        ),
+        "channel": (
+            {
+                "id": channel.id,
+                "title": channel.title,
+                "telegram_username": channel.telegram_username,
+                # alias conservés pour le frontend existant
+                "username": channel.telegram_username,
+                "description": channel.description,
+                "photo_url": channel.photo_url,
+                "subscriber_count": channel.subscriber_count,
+                "subscribers_count": channel.subscriber_count,
+                "verified": bool(
+                    channel.verification_status == "approved"
+                    and channel.bot_is_admin
+                    and channel.owner_verified
+                ),
+                # champs lus par le frontend (badges de vérification)
+                "telegram_verified": bool(
+                    channel.verification_status == "approved"
+                ),
+                "bot_is_admin": bool(channel.bot_is_admin),
+                "seller_is_admin": bool(channel.owner_verified),
+                "is_active": channel.is_active,
+            }
+            if channel
+            else None
+        ),
     }
 
 
+def _escape_like(value: str) -> str:
+    return (
+        value.replace("\\", "\\\\")
+        .replace("%", "\\%")
+        .replace("_", "\\_")
+    )
+
+
+async def _get_own_listing(
+    listing_id: int,
+    user_id: int,
+    db,
+    *,
+    lock: bool = False,
+) -> Listing:
+    query = select(Listing).where(Listing.id == listing_id)
+
+    if lock:
+        query = query.with_for_update()
+
+    listing = (await db.execute(query)).scalar_one_or_none()
+
+    # 404 (et non 403) : on ne révèle pas l'existence d'une annonce d'autrui.
+    if listing is None or listing.seller_id != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Annonce introuvable.",
+        )
+
+    return listing
+
+
 # ============================================================
-# LISTINGS PUBLIÉES
+# LISTE PUBLIQUE
 # ============================================================
 
 @router.get("")
-@sync_route
-def get_listings(
+async def get_listings(
+    db: DBSession,
     search: str | None = None,
     category: str | None = None,
-    language: str | None = None,
     min_price: Decimal | None = None,
     max_price: Decimal | None = None,
     min_subscribers: int | None = None,
     max_subscribers: int | None = None,
     limit: int = 50,
     offset: int = 0,
-    db: Session = fastapi.Depends(get_db),
 ):
-    """
-    Retourne les annonces disponibles.
+    limit = max(1, min(limit, 100))
+    offset = max(0, offset)
 
-    Cette route est publique côté marketplace.
-    """
-
-    if limit < 1:
-        limit = 1
-
-    if limit > 100:
-        limit = 100
-
-    if offset < 0:
-        offset = 0
-
-    query = (
-        db.query(Listing)
-        .join(
-            Channel,
-            Listing.channel_id == Channel.id,
-        )
-        .filter(
-            Listing.status == "available",
-            Channel.is_active.is_(True),
-            Channel.telegram_verified.is_(True),
-        )
-    )
-
-    # --------------------------------------------------------
-    # RECHERCHE
-    # --------------------------------------------------------
+    conditions = [
+        Listing.status == "published",
+        Listing.is_public.is_(True),
+        Channel.is_active.is_(True),
+        Channel.verification_status == "approved",
+    ]
 
     if search:
-        search_value = (
-            search.strip()
-            .lower()
-            .replace("@", "")
-        )
+        value = _escape_like(search.strip().lower().replace("@", ""))
 
-        if search_value:
-            pattern = f"%{search_value}%"
-
-            query = query.filter(
+        if value:
+            pattern = f"%{value}%"
+            conditions.append(
                 or_(
-                    func.lower(
-                        Channel.title
-                    ).like(pattern),
-
-                    func.lower(
-                        Channel.username
-                    ).like(pattern),
-
-                    func.lower(
-                        Channel.description
-                    ).like(pattern),
+                    func.lower(Channel.title).like(pattern, escape="\\"),
+                    func.lower(Channel.telegram_username).like(
+                        pattern, escape="\\"
+                    ),
+                    func.lower(Listing.title).like(pattern, escape="\\"),
                 )
             )
 
-    # --------------------------------------------------------
-    # FILTRES
-    # --------------------------------------------------------
-
     if category:
-        query = query.filter(
-            Channel.category == category
-        )
-
-    if language:
-        query = query.filter(
-            Channel.language == language
-        )
+        conditions.append(Listing.category == category)
 
     if min_price is not None:
-        query = query.filter(
-            Listing.price >= min_price
-        )
+        conditions.append(Listing.price >= min_price)
 
     if max_price is not None:
-        query = query.filter(
-            Listing.price <= max_price
-        )
+        conditions.append(Listing.price <= max_price)
 
     if min_subscribers is not None:
-        query = query.filter(
-            Channel.subscribers_count
-            >= min_subscribers
-        )
+        conditions.append(Channel.subscriber_count >= min_subscribers)
 
     if max_subscribers is not None:
-        query = query.filter(
-            Channel.subscribers_count
-            <= max_subscribers
-        )
+        conditions.append(Channel.subscriber_count <= max_subscribers)
 
-    total = query.count()
-
-    listings = (
-        query
-        .order_by(
-            Listing.created_at.desc()
-        )
-        .offset(offset)
-        .limit(limit)
-        .all()
+    base = (
+        select(Listing, Channel)
+        .join(Channel, Listing.channel_id == Channel.id)
+        .where(*conditions)
     )
+
+    total = (
+        await db.execute(
+            select(func.count())
+            .select_from(Listing)
+            .join(Channel, Listing.channel_id == Channel.id)
+            .where(*conditions)
+        )
+    ).scalar_one()
+
+    rows = (
+        await db.execute(
+            base.order_by(Listing.created_at.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
 
     return {
         "status": "success",
         "total": total,
         "limit": limit,
         "offset": offset,
-        "listings": [
-            listing_to_dict(listing)
-            for listing in listings
-        ],
+        "listings": [listing_to_dict(l, c) for l, c in rows],
     }
 
 
 # ============================================================
-# UNE ANNONCE
-# ============================================================
-
-@router.get("/{listing_id}")
-@sync_route
-def get_listing(
-    listing_id: int,
-    db: Session = fastapi.Depends(get_db),
-):
-    listing = (
-        db.query(Listing)
-        .filter(
-            Listing.id == listing_id,
-        )
-        .first()
-    )
-
-    if not listing:
-        raise fastapi.HTTPException(
-            status_code=404,
-            detail="Annonce introuvable.",
-        )
-
-    if listing.status not in (
-        "available",
-        "reserved",
-    ):
-        raise fastapi.HTTPException(
-            status_code=404,
-            detail="Cette annonce n'est plus disponible.",
-        )
-
-    return {
-        "status": "success",
-        "listing": listing_to_dict(
-            listing
-        ),
-    }
-
-
-# ============================================================
-# MES ANNONCES
+# MES ANNONCES (déclaré AVANT /{listing_id})
 # ============================================================
 
 @router.get("/mine/all")
-@sync_route
-def get_my_listings(
-    db: Session = fastapi.Depends(get_db),
-    current_user: User = fastapi.Depends(
-        get_current_user
-    ),
+async def get_my_listings(
+    db: DBSession,
+    current_user: CurrentUser,
 ):
-    listings = (
-        db.query(Listing)
-        .filter(
-            Listing.seller_id == current_user.id
+    rows = (
+        await db.execute(
+            select(Listing, Channel)
+            .join(Channel, Listing.channel_id == Channel.id)
+            .where(Listing.seller_id == current_user.id)
+            .order_by(Listing.created_at.desc())
         )
-        .order_by(
-            Listing.created_at.desc()
-        )
-        .all()
-    )
+    ).all()
 
     return {
         "status": "success",
-        "count": len(listings),
-        "listings": [
-            listing_to_dict(listing)
-            for listing in listings
-        ],
+        "count": len(rows),
+        "listings": [listing_to_dict(l, c) for l, c in rows],
+    }
+
+
+# ============================================================
+# UNE ANNONCE (publique)
+# ============================================================
+
+@router.get("/{listing_id}")
+async def get_listing(
+    listing_id: int,
+    db: DBSession,
+):
+    row = (
+        await db.execute(
+            select(Listing, Channel)
+            .join(Channel, Listing.channel_id == Channel.id)
+            .where(Listing.id == listing_id)
+        )
+    ).first()
+
+    if row is None:
+        raise HTTPException(404, "Annonce introuvable.")
+
+    listing, channel = row
+
+    if listing.status not in ("published", "reserved") or not listing.is_public:
+        raise HTTPException(404, "Cette annonce n'est plus disponible.")
+
+    return {
+        "status": "success",
+        "listing": listing_to_dict(listing, channel),
     }
 
 
@@ -295,163 +270,98 @@ def get_my_listings(
 # CRÉER UNE ANNONCE
 # ============================================================
 
-@router.post("")
-@sync_route
-def create_listing(
+@router.post("", status_code=status.HTTP_201_CREATED)
+async def create_listing(
     payload: ListingCreate,
-    db: Session = fastapi.Depends(get_db),
-    current_user: User = fastapi.Depends(
-        get_current_user
-    ),
+    db: DBSession,
+    current_user: CurrentUser,
 ):
-    """
-    Crée une annonce.
-
-    L'annonce reste en "pending" jusqu'à validation
-    par l'administration.
-    """
-
-    # --------------------------------------------------------
-    # Recherche du canal
-    # --------------------------------------------------------
-
-    username = payload.username.strip()
-
-    if username.startswith("@"):
-        username = username[1:]
-
+    # Verrou sur la chaîne : empêche deux annonces actives simultanées
+    # créées par deux requêtes parallèles.
     channel = (
-        db.query(Channel)
-        .filter(
-            Channel.username == username,
-            Channel.owner_id == current_user.id,
-            Channel.is_active.is_(True),
+        await db.execute(
+            select(Channel)
+            .where(
+                Channel.id == payload.channel_id,
+                Channel.owner_id == current_user.id,
+                Channel.is_active.is_(True),
+            )
+            .with_for_update()
         )
-        .first()
-    )
+    ).scalar_one_or_none()
 
-    if not channel:
-        raise fastapi.HTTPException(
-            status_code=404,
-            detail=(
-                "Canal introuvable. "
-                "Ajoute d'abord le canal à ton compte."
-            ),
-        )
-
-    # --------------------------------------------------------
-    # Vérifications
-    # --------------------------------------------------------
-
-    if not channel.telegram_verified:
-        raise fastapi.HTTPException(
-            status_code=400,
-            detail=(
-                "Le canal doit être vérifié "
-                "avant de créer une annonce."
-            ),
+    if channel is None:
+        raise HTTPException(
+            404,
+            "Canal introuvable. Ajoutez d'abord le canal à votre compte.",
         )
 
-    if not channel.bot_is_admin:
-        raise fastapi.HTTPException(
-            status_code=400,
-            detail=(
-                "Le bot NexMarket doit être "
-                "administrateur du canal."
-            ),
+    # Le vendeur crée canal + annonce d'un seul geste : le canal peut
+    # donc être encore "submitted". L'admin l'approuvera en validant
+    # l'annonce. Les vérifications Telegram, elles, sont obligatoires.
+    if channel.verification_status not in ("submitted", "approved"):
+        raise HTTPException(
+            400,
+            "Ce canal n'a pas été accepté. Soumettez-le à nouveau.",
         )
 
-    if not channel.seller_is_admin:
-        raise fastapi.HTTPException(
-            status_code=403,
-            detail=(
-                "Tu dois être administrateur "
-                "du canal."
-            ),
+    if not channel.owner_verified:
+        raise HTTPException(
+            400,
+            "Vous devez être propriétaire du canal pour le vendre.",
         )
 
-    # --------------------------------------------------------
-    # Vérifie qu'une annonce active n'existe pas
-    # --------------------------------------------------------
-
-    existing_listing = (
-        db.query(Listing)
-        .filter(
-            Listing.channel_id == channel.id,
-            Listing.seller_id == current_user.id,
-            Listing.status.in_(
-                [
-                    "pending",
-                    "available",
-                    "reserved",
-                ]
-            ),
-        )
-        .first()
-    )
-
-    if existing_listing:
-        raise fastapi.HTTPException(
-            status_code=409,
-            detail=(
-                "Ce canal possède déjà "
-                "une annonce active."
-            ),
+    if not channel.bot_is_admin or not channel.bot_permissions_verified:
+        raise HTTPException(
+            400,
+            "Le bot NexMarket doit être administrateur du canal "
+            "avec les permissions requises.",
         )
 
-    # --------------------------------------------------------
-    # Frais de publication
-    # --------------------------------------------------------
+    currency = payload.currency.strip().upper()
 
-    publish_fee = Decimal(
-        str(
-            settings.LISTING_PUBLISH_FEE
+    if currency not in settings.get_supported_currencies():
+        raise HTTPException(400, "Devise non supportée.")
+
+    existing = (
+        await db.execute(
+            select(Listing.id).where(
+                Listing.channel_id == channel.id,
+                Listing.status.in_(ACTIVE_STATUSES),
+            )
         )
-    )
+    ).first()
 
-    publish_fee_paid = (
-        publish_fee <= Decimal("0")
-    )
-
-    # --------------------------------------------------------
-    # Création
-    # --------------------------------------------------------
+    if existing:
+        raise HTTPException(
+            409,
+            "Ce canal possède déjà une annonce active.",
+        )
 
     listing = Listing(
         channel_id=channel.id,
         seller_id=current_user.id,
-
-        price=payload.price,
-        currency=current_user.currency,
-
+        title=(payload.title or channel.title or "Canal Telegram").strip(),
+        category=payload.category,
         description=payload.description,
-
-        status="pending",
-
-        admin_note=None,
-        validated_by_id=None,
-        validated_at=None,
-
-        locked_price=None,
-        locked_at=None,
-
-        publish_fee=publish_fee,
-        publish_fee_paid=publish_fee_paid,
+        price=payload.price,
+        currency=currency,
+        status="pending_review",
+        is_public=False,
+        # Le taux appliqué est figé sur l'annonce à sa création.
+        platform_fee_rate=Decimal(str(settings.NEXMARKET_FEE_RATE)),
     )
 
     db.add(listing)
-    db.commit()
-    db.refresh(listing)
+    await db.commit()
+    await db.refresh(listing)
 
     return {
         "status": "success",
         "message": (
-            "Annonce créée et envoyée "
-            "à l'administration pour validation."
+            "Annonce créée et envoyée à l'administration pour validation."
         ),
-        "listing": listing_to_dict(
-            listing
-        ),
+        "listing": listing_to_dict(listing, channel),
     }
 
 
@@ -460,116 +370,64 @@ def create_listing(
 # ============================================================
 
 @router.patch("/{listing_id}")
-@sync_route
-def update_listing(
+async def update_listing(
     listing_id: int,
     payload: ListingUpdate,
-    db: Session = fastapi.Depends(get_db),
-    current_user: User = fastapi.Depends(
-        get_current_user
-    ),
+    db: DBSession,
+    current_user: CurrentUser,
 ):
-    listing = (
-        db.query(Listing)
-        .filter(
-            Listing.id == listing_id,
-            Listing.seller_id == current_user.id,
-        )
-        .first()
+    listing = await _get_own_listing(
+        listing_id, current_user.id, db, lock=True
     )
 
-    if not listing:
-        raise fastapi.HTTPException(
-            status_code=404,
-            detail="Annonce introuvable.",
+    if listing.status in ("reserved", "sold"):
+        raise HTTPException(
+            409,
+            "Une annonce réservée ou vendue ne peut plus être modifiée.",
         )
 
-    # --------------------------------------------------------
-    # Prix verrouillé
-    # --------------------------------------------------------
+    if listing.status == "cancelled":
+        raise HTTPException(409, "Cette annonce est annulée.")
 
-    if listing.status == "reserved":
-        raise fastapi.HTTPException(
-            status_code=409,
-            detail=(
-                "Le prix est actuellement verrouillé "
-                "par une transaction."
-            ),
+    data = payload.model_dump(exclude_unset=True)
+
+    if not data:
+        raise HTTPException(400, "Aucune modification fournie.")
+
+    if "currency" in data and data["currency"] is not None:
+        currency = data["currency"].strip().upper()
+
+        if currency not in settings.get_supported_currencies():
+            raise HTTPException(400, "Devise non supportée.")
+
+        data["currency"] = currency
+
+    for field in ("price", "currency", "title", "description", "category"):
+        if field in data and data[field] is not None:
+            setattr(listing, field, data[field])
+
+    # Toute modification d'une annonce en ligne (ou refusée) repasse
+    # par la validation admin.
+    if listing.status in ("published", "approved", "rejected"):
+        listing.status = "pending_review"
+        listing.is_public = False
+        listing.published_at = None
+        listing.reviewed_by_admin_id = None
+        listing.reviewed_at = None
+        listing.rejection_reason = None
+
+    await db.commit()
+    await db.refresh(listing)
+
+    channel = (
+        await db.execute(
+            select(Channel).where(Channel.id == listing.channel_id)
         )
-
-    if listing.status == "sold":
-        raise fastapi.HTTPException(
-            status_code=409,
-            detail=(
-                "Cette annonce a déjà été vendue."
-            ),
-        )
-
-    if listing.status in (
-        "cancelled",
-        "archived",
-        "rejected",
-    ):
-        raise fastapi.HTTPException(
-            status_code=409,
-            detail=(
-                "Cette annonce ne peut plus être modifiée."
-            ),
-        )
-
-    # --------------------------------------------------------
-    # Modification du prix
-    # --------------------------------------------------------
-
-    if payload.price is not None:
-        listing.price = payload.price
-
-    # --------------------------------------------------------
-    # Description
-    # --------------------------------------------------------
-
-    if payload.description is not None:
-        listing.description = (
-            payload.description
-        )
-
-    # --------------------------------------------------------
-    # Les catégories appartiennent au canal
-    # --------------------------------------------------------
-
-    channel = listing.channel
-
-    if payload.category is not None:
-        channel.category = payload.category
-
-    if payload.country is not None:
-        channel.country = payload.country
-
-    if payload.language is not None:
-        channel.language = payload.language
-
-    # --------------------------------------------------------
-    # Si une annonce disponible est modifiée,
-    # elle repasse en validation.
-    # --------------------------------------------------------
-
-    if listing.status == "available":
-        listing.status = "pending"
-        listing.validated_by_id = None
-        listing.validated_at = None
-        listing.admin_note = (
-            "Annonce modifiée : nouvelle validation requise."
-        )
-
-    db.commit()
-    db.refresh(listing)
+    ).scalar_one_or_none()
 
     return {
         "status": "success",
-        "message": "Annonce mise à jour.",
-        "listing": listing_to_dict(
-            listing
-        ),
+        "listing": listing_to_dict(listing, channel),
     }
 
 
@@ -578,51 +436,31 @@ def update_listing(
 # ============================================================
 
 @router.post("/{listing_id}/cancel")
-@sync_route
-def cancel_listing(
+async def cancel_listing(
     listing_id: int,
-    db: Session = fastapi.Depends(get_db),
-    current_user: User = fastapi.Depends(
-        get_current_user
-    ),
+    db: DBSession,
+    current_user: CurrentUser,
 ):
-    listing = (
-        db.query(Listing)
-        .filter(
-            Listing.id == listing_id,
-            Listing.seller_id == current_user.id,
-        )
-        .first()
+    listing = await _get_own_listing(
+        listing_id, current_user.id, db, lock=True
     )
 
-    if not listing:
-        raise fastapi.HTTPException(
-            status_code=404,
-            detail="Annonce introuvable.",
-        )
-
     if listing.status == "reserved":
-        raise fastapi.HTTPException(
-            status_code=409,
-            detail=(
-                "Impossible d'annuler cette annonce "
-                "pendant une transaction active."
-            ),
+        raise HTTPException(
+            409,
+            "Une transaction est en cours sur cette annonce.",
         )
 
     if listing.status == "sold":
-        raise fastapi.HTTPException(
-            status_code=409,
-            detail=(
-                "Cette annonce a déjà été vendue."
-            ),
-        )
+        raise HTTPException(409, "Cette annonce est déjà vendue.")
 
     listing.status = "cancelled"
+    listing.is_public = False
 
-    db.commit()
+    await db.commit()
 
     return {
         "status": "success",
         "message": "Annonce annulée.",
+        "listing_id": listing.id,
     }

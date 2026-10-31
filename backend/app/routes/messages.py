@@ -104,7 +104,9 @@ async def get_transaction_messages(
         select(Message)
         .where(
             Message.transaction_id
-            == transaction_id
+            == transaction_id,
+            # Les messages supprimés ne doivent plus s'afficher
+            Message.is_deleted.is_(False),
         )
     )
 
