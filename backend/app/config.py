@@ -92,6 +92,9 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
+        # Une variable Render laissée vide ("") valait "" et faisait
+        # planter les champs numériques (ex. ADMIN_TELEGRAM_ID: int).
+        env_ignore_empty=True,
         case_sensitive=True,
         extra="ignore",
     )

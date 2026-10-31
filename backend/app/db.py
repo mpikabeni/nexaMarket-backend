@@ -1,4 +1,5 @@
 from collections.abc import AsyncGenerator
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from sqlalchemy.ext.asyncio import (
     AsyncSession,
@@ -10,35 +11,47 @@ from sqlalchemy.orm import DeclarativeBase
 from app.config import settings
 
 
-def normalize_database_url(url: str) -> str:
+def normalize_database_url(url: str) -> tuple[str, dict]:
     """
     Convertit une URL PostgreSQL classique vers asyncpg.
+
+    - postgres:// et postgresql:// -> postgresql+asyncpg://
+    - asyncpg REFUSE le paramètre `?sslmode=...` (TypeError au premier
+      accès à la base) : il est retiré et converti en option SSL.
     """
 
-    if url.startswith("postgresql+asyncpg://"):
-        return url
+    url = (url or "").strip()
 
-    if url.startswith("postgresql+psycopg://"):
-        return url.replace(
-            "postgresql+psycopg://",
-            "postgresql+asyncpg://",
-            1,
+    for prefix in (
+        "postgresql+psycopg://",
+        "postgresql://",
+        "postgres://",
+    ):
+        if url.startswith(prefix):
+            url = "postgresql+asyncpg://" + url[len(prefix):]
+            break
+
+    connect_args: dict = {}
+
+    parts = urlsplit(url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+
+    sslmode = query.pop("sslmode", None)
+
+    if sslmode and sslmode != "disable":
+        connect_args["ssl"] = "require"
+
+    if sslmode is not None:
+        url = urlunsplit(
+            parts._replace(query=urlencode(query))
         )
 
-    if url.startswith("postgresql://"):
-        return url.replace(
-            "postgresql://",
-            "postgresql+asyncpg://",
-            1,
-        )
-
-    return url
+    return url, connect_args
 
 
-DATABASE_URL = normalize_database_url(
+DATABASE_URL, _CONNECT_ARGS = normalize_database_url(
     settings.DATABASE_URL
 )
-
 
 # =========================================================
 # SQLALCHEMY ENGINE
@@ -46,6 +59,7 @@ DATABASE_URL = normalize_database_url(
 
 engine = create_async_engine(
     DATABASE_URL,
+    connect_args=_CONNECT_ARGS,
     echo=False,
     pool_pre_ping=True,
     pool_recycle=1800,
