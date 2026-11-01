@@ -50,12 +50,6 @@ class Settings(BaseSettings):
 
     JESSIKAPAY_API_KEY: str = ""
     JESSIKAPAY_API_SECRET: str = ""
-    JESSIKAPAY_WEBHOOK_URL: str = ""
-
-    # Secret partagé qui authentifie les webhooks entrants.
-    # À envoyer par JessiKaPay dans l'en-tête X-Webhook-Secret
-    # (ou en paramètre ?token=... de l'URL du webhook).
-    JESSIKAPAY_WEBHOOK_SECRET: str = ""
     NEXA_JP_NUMBER: str = ""
 
     # ========================================================

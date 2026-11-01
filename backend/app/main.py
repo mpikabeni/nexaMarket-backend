@@ -22,9 +22,9 @@ from app.routes import (
     transactions,
     users,
     wallet,
-    webhooks,
     withdrawals,
 )
+from app.services.deposit_sync import sync_pending_deposits
 from app.services.jessikapay import JessiKaPayError
 from app.services.transaction_service import (
     TransactionService,
@@ -35,6 +35,7 @@ from app.services.wallet_service import WalletServiceError
 logger = logging.getLogger("nexmarket")
 
 EXPIRE_INTERVAL_SECONDS = 300
+DEPOSIT_SYNC_INTERVAL_SECONDS = 30
 
 telegram_application = None
 
@@ -72,6 +73,26 @@ async def _maintenance_loop() -> None:
             logger.exception("Échec de la tâche de maintenance")
 
         await asyncio.sleep(EXPIRE_INTERVAL_SECONDS)
+
+
+# ============================================================
+# VÉRIFICATION DES DÉPÔTS (remplace le webhook JessiKaPay)
+# ============================================================
+
+async def _deposit_sync_loop() -> None:
+    while True:
+        try:
+            credited = await sync_pending_deposits(AsyncSessionLocal)
+
+            if credited:
+                logger.info("%s dépôt(s) crédité(s)", credited)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Échec de la vérification des dépôts")
+
+        await asyncio.sleep(DEPOSIT_SYNC_INTERVAL_SECONDS)
 
 
 # ============================================================
@@ -137,17 +158,19 @@ async def lifespan(app: FastAPI):
     telegram_application = await _start_bot()
 
     expire_task = asyncio.create_task(_maintenance_loop())
+    deposit_task = asyncio.create_task(_deposit_sync_loop())
 
     try:
         yield
 
     finally:
-        expire_task.cancel()
+        for task in (expire_task, deposit_task):
+            task.cancel()
 
-        try:
-            await expire_task
-        except asyncio.CancelledError:
-            pass
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
 
         if telegram_application is not None:
             await _stop_bot(telegram_application)
@@ -219,7 +242,6 @@ for router_module in [
     admin,
     deposits,
     withdrawals,
-    webhooks,
 ]:
     app.include_router(router_module.router, prefix="/api")
 
