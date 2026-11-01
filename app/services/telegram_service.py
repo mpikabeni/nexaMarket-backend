@@ -4,6 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import asyncio
+import time
 
 from telegram import Bot
 from telegram.request import HTTPXRequest
@@ -55,6 +56,8 @@ class TelegramService:
     }
 
     def __init__(self) -> None:
+        self._user_photo_cache: dict[int, tuple[float, bytes]] = {}
+
         self.bot = Bot(
             token=settings.TELEGRAM_BOT_TOKEN,
             request=HTTPXRequest(
@@ -183,6 +186,42 @@ class TelegramService:
             return bytes(await file.download_as_bytearray())
         except TelegramError:
             return None
+
+    async def fetch_user_photo(self, telegram_id: int) -> bytes | None:
+        """
+        Photo de profil d'un utilisateur, via le bot (secours quand Telegram
+        n'envoie pas `photo_url` à la Mini App). Mise en cache 6 h.
+        """
+
+        cached = self._user_photo_cache.get(telegram_id)
+
+        if cached and cached[0] > time.time():
+            return cached[1]
+
+        try:
+            photos = await self.bot.get_user_profile_photos(
+                user_id=telegram_id,
+                limit=1,
+            )
+
+            if not photos.total_count or not photos.photos:
+                return None
+
+            # La dernière taille de la liste est la plus grande.
+            data = await self.fetch_photo(photos.photos[0][-1].file_id)
+        except TelegramError:
+            return None
+
+        if data:
+            if len(self._user_photo_cache) > 500:
+                self._user_photo_cache.clear()
+
+            self._user_photo_cache[telegram_id] = (
+                time.time() + 6 * 3600,
+                data,
+            )
+
+        return data
 
     async def verify_channel_owner(
         self,
