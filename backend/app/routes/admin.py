@@ -21,7 +21,9 @@ from app.models.listing import Listing
 from app.services.notification_service import notify_user_id
 from app.models.message import Message
 from app.models.platform import PlatformWallet
-from app.models.schemas import RejectRequest
+from app.models.schemas import RejectRequest, WithdrawalResolveRequest
+from app.models.withdrawal import Withdrawal
+from app.services.payout_settlement import complete_withdrawal, fail_withdrawal
 from app.models.report import Report
 from app.models.transaction import Transaction
 from app.models.user import User
@@ -1252,3 +1254,94 @@ async def platform_wallet(
             for w in wallets
         ]
     }
+
+
+# ============================================================
+# RETRAITS AU STATUT INCONNU (pas de webhook)
+# ============================================================
+
+@router.get("/withdrawals")
+async def list_withdrawals(
+    current_admin: CurrentAdmin,
+    db: DBSession,
+    status_filter: str = "processing",
+    limit: int = 100,
+):
+    """Retraits à vérifier (par défaut : « processing »)."""
+
+    limit = max(1, min(limit, 200))
+
+    rows = (
+        await db.execute(
+            select(Withdrawal)
+            .where(Withdrawal.status == status_filter)
+            .order_by(Withdrawal.created_at.desc())
+            .limit(limit)
+        )
+    ).scalars().all()
+
+    return {
+        "withdrawals": [
+            {
+                "id": w.id,
+                "reference": w.reference,
+                "user_id": w.user_id,
+                "amount": w.amount,
+                "currency": w.currency,
+                "jp_number": w.jessikapay_jp_number,
+                "status": w.status,
+                "failure_reason": w.failure_reason,
+                "created_at": w.created_at,
+            }
+            for w in rows
+        ]
+    }
+
+
+@router.post("/withdrawals/{withdrawal_id}/resolve")
+async def resolve_withdrawal(
+    withdrawal_id: int,
+    payload: WithdrawalResolveRequest,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """
+    Tranche un retrait dont l'issue est inconnue, APRÈS avoir vérifié
+    dans JessiKaPay si le versement a bien été fait :
+      - complete : le versement a eu lieu -> les fonds bloqués sont consommés ;
+      - fail     : il n'a pas eu lieu     -> les fonds sont rendus à l'utilisateur.
+    """
+
+    withdrawal = (
+        await db.execute(
+            select(Withdrawal)
+            .where(Withdrawal.id == withdrawal_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if withdrawal is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Retrait introuvable.",
+        )
+
+    if withdrawal.status not in ("processing", "pending"):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Ce retrait est déjà « {withdrawal.status} ».",
+        )
+
+    withdrawal.reviewed_by_admin_id = current_admin.id
+    withdrawal.admin_note = payload.note
+
+    if payload.action == "complete":
+        await complete_withdrawal(db, withdrawal)
+    else:
+        await fail_withdrawal(
+            db,
+            withdrawal,
+            payload.note or "Retrait non effectué (décision admin).",
+        )
+
+    return {"id": withdrawal.id, "status": withdrawal.status}

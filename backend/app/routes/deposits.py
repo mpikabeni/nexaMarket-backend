@@ -10,6 +10,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models.deposit import Deposit
 from app.models.user import User
+from app.services.deposit_sync import sync_deposit
 from app.services.jessikapay import JessiKaPayError, jessikapay_service
 
 router = APIRouter(prefix="/deposits", tags=["Deposits"])
@@ -108,3 +109,31 @@ async def my_deposits(
         }
         for d in rows
     ]
+
+
+@router.post("/{deposit_id}/check")
+async def check_deposit(
+    deposit_id: int,
+    db: AsyncSession = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """
+    Vérifie auprès de JessiKaPay si le dépôt est payé (il n'y a plus
+    de webhook) et crédite le wallet le cas échéant.
+    """
+
+    owned = (
+        await db.execute(
+            select(Deposit.id).where(
+                Deposit.id == deposit_id,
+                Deposit.user_id == user.id,
+            )
+        )
+    ).first()
+
+    if owned is None:
+        raise HTTPException(404, "Dépôt introuvable.")
+
+    status = await sync_deposit(db, deposit_id)
+
+    return {"id": deposit_id, "status": status, "paid": status == "paid"}

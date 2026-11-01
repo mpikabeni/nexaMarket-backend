@@ -17,6 +17,12 @@ from app.services.jessikapay import (
     JessiKaPayError,
     jessikapay_service,
 )
+from app.services.payout_settlement import (
+    FAILED_STATUSES,
+    PENDING_STATUSES,
+    complete_withdrawal,
+    fail_withdrawal,
+)
 from app.services.wallet_service import (
     WalletService,
     WalletServiceError,
@@ -187,8 +193,8 @@ async def request_withdrawal(
 
         # Timeout / erreur réseau / 5xx : JessiKaPay a PEUT-ÊTRE
         # déjà payé. Rendre l'argent ici permettrait un double
-        # paiement. On garde les fonds bloqués et on laisse le
-        # webhook credit.completed (ou un admin) trancher.
+        # paiement. On garde les fonds bloqués et un admin
+        # tranche (POST /admin/withdrawals/{id}/resolve).
         if exc.ambiguous:
             withdrawal.status = "processing"
             withdrawal.processed_at = datetime.utcnow()
@@ -252,10 +258,35 @@ async def request_withdrawal(
             transaction_id
         )
 
-    withdrawal.status = "processing"
     withdrawal.processed_at = datetime.utcnow()
 
-    await db.commit()
+    # Plus de webhook : la réponse du payout fait foi.
+    #  - refus explicite  -> fonds rendus ;
+    #  - en attente       -> reste "processing" (décision admin) ;
+    #  - sinon (accepté)  -> fonds consommés, retrait terminé.
+    provider_status = str(
+        payout_response.get("status") or "completed"
+    ).lower()
+
+    if provider_status in FAILED_STATUSES:
+        reason = (
+            payout_response.get("message")
+            or payout_response.get("reason")
+            or f"Payout {provider_status}."
+        )
+        await fail_withdrawal(db, withdrawal, str(reason))
+
+        raise HTTPException(
+            status_code=502,
+            detail=f"Retrait refusé par JessiKaPay : {reason}",
+        )
+
+    if provider_status in PENDING_STATUSES:
+        withdrawal.status = "processing"
+        await db.commit()
+    else:
+        await complete_withdrawal(db, withdrawal)
+
     await db.refresh(withdrawal)
 
     return {
@@ -271,7 +302,9 @@ async def request_withdrawal(
         "currency": withdrawal.currency,
         "status": withdrawal.status,
         "message": (
-            "Votre retrait est en cours de traitement."
+            "Votre retrait a été effectué."
+            if withdrawal.status == "completed"
+            else "Votre retrait est en cours de traitement."
         ),
     }
 
