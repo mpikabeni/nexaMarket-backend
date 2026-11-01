@@ -70,6 +70,28 @@ class JessiKaPayService:
             "Content-Type": "application/json",
         }
 
+    def _get_client(self) -> httpx.AsyncClient:
+        """
+        Client HTTP partagé (connexions réutilisées : évite un handshake
+        TLS à chaque appel, très lent sur une petite instance).
+        """
+
+        if getattr(self, "_client", None) is None:
+            self._client = httpx.AsyncClient(
+                timeout=httpx.Timeout(
+                    connect=6.0,
+                    read=20.0,
+                    write=10.0,
+                    pool=5.0,
+                ),
+                limits=httpx.Limits(
+                    max_connections=20,
+                    max_keepalive_connections=5,
+                ),
+            )
+
+        return self._client
+
     async def _request(
         self,
         method: str,
@@ -90,16 +112,21 @@ class JessiKaPayService:
         url = f"{self.base_url}{path}"
 
         try:
-            async with httpx.AsyncClient(
-                timeout=30.0
-            ) as client:
+            response = await self._get_client().request(
+                method=method,
+                url=url,
+                content=body,
+                headers=headers,
+            )
 
-                response = await client.request(
-                    method=method,
-                    url=url,
-                    content=body,
-                    headers=headers,
-                )
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # La connexion n'a pas abouti : la requête n'est JAMAIS
+            # partie, le prestataire n'a rien traité (non ambigu).
+            raise JessiKaPayError(
+                "JessiKaPay est injoignable pour le moment. "
+                "Réessayez dans un instant.",
+                ambiguous=False,
+            ) from exc
 
         except httpx.RequestError as exc:
             raise JessiKaPayError(

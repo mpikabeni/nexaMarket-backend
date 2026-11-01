@@ -3,7 +3,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import asyncio
+
 from telegram import Bot
+from telegram.request import HTTPXRequest
 from telegram.error import TelegramError
 from telegram.constants import ChatMemberStatus
 
@@ -37,18 +40,39 @@ class TelegramService:
     Service centralisé pour les opérations Telegram de NexMarket.
     """
 
+    # Le bot ne publie rien dans le canal : il lui faut seulement être
+    # administrateur (pour lire les membres / le nombre d'abonnés) et
+    # pouvoir inviter. Avant, 5 droits étaient exigés (publier, modifier,
+    # supprimer...), et le moindre oubli donnait un « échec » sans détail.
     REQUIRED_ADMIN_PERMISSIONS = {
         "can_manage_chat": True,
-        "can_post_messages": True,
-        "can_edit_messages": True,
-        "can_delete_messages": True,
         "can_invite_users": True,
+    }
+
+    PERMISSION_LABELS = {
+        "can_manage_chat": "gérer le canal",
+        "can_invite_users": "inviter des utilisateurs",
     }
 
     def __init__(self) -> None:
         self.bot = Bot(
             token=settings.TELEGRAM_BOT_TOKEN,
+            request=HTTPXRequest(
+                connection_pool_size=8,
+                connect_timeout=8.0,
+                read_timeout=12.0,
+                write_timeout=12.0,
+                pool_timeout=5.0,
+            ),
         )
+
+    async def _get_me(self):
+        """Identité du bot, demandée à Telegram une seule fois."""
+
+        if getattr(self, "_me", None) is None:
+            self._me = await self.bot.get_me()
+
+        return self._me
 
     async def close(self) -> None:
         """
@@ -102,7 +126,7 @@ class TelegramService:
         """
 
         try:
-            me = await self.bot.get_me()
+            me = await self._get_me()
 
             member = await self.bot.get_chat_member(
                 chat_id=channel_id,
@@ -129,6 +153,36 @@ class TelegramService:
         )
 
         return True, permissions_ok
+
+    async def get_missing_permissions(self, channel_id: int) -> list[str]:
+        """Noms lisibles des droits d'administrateur qui manquent au bot."""
+
+        try:
+            me = await self._get_me()
+            member = await self.bot.get_chat_member(
+                chat_id=channel_id,
+                user_id=me.id,
+            )
+        except TelegramError:
+            return []
+
+        if member.status == ChatMemberStatus.OWNER:
+            return []
+
+        return [
+            self.PERMISSION_LABELS.get(permission, permission)
+            for permission in self.REQUIRED_ADMIN_PERMISSIONS
+            if getattr(member, permission, False) is not True
+        ]
+
+    async def fetch_photo(self, file_id: str) -> bytes | None:
+        """Télécharge une photo de canal (passe par le proxy de l'API)."""
+
+        try:
+            file = await self.bot.get_file(file_id)
+            return bytes(await file.download_as_bytearray())
+        except TelegramError:
+            return None
 
     async def verify_channel_owner(
         self,
@@ -184,26 +238,32 @@ class TelegramService:
         """
 
         try:
-            chat = await self.get_channel(channel_id)
-
-            bot_is_admin, permissions_ok = (
-                await self.verify_bot_admin(channel_id)
-            )
-
-            owner_verified = await self.verify_channel_owner(
-                channel_id,
-                submitted_by_telegram_id,
-            )
-
-            subscriber_count = await self.get_subscriber_count(
-                channel_id,
+            # Quatre appels indépendants : lancés ensemble (au lieu de
+            # l'un après l'autre) pour diviser le temps d'attente.
+            (
+                chat,
+                (bot_is_admin, permissions_ok),
+                owner_verified,
+                subscriber_count,
+            ) = await asyncio.gather(
+                self.get_channel(channel_id),
+                self.verify_bot_admin(channel_id),
+                self.verify_channel_owner(
+                    channel_id,
+                    submitted_by_telegram_id,
+                ),
+                self.get_subscriber_count(channel_id),
             )
 
             return TelegramChannelVerification(
                 channel_id=channel_id,
                 title=chat.title,
                 username=getattr(chat, "username", None),
-                photo_url=None,
+                photo_url=(
+                    f"tg:{chat.photo.big_file_id}"
+                    if getattr(chat, "photo", None)
+                    else None
+                ),
                 subscriber_count=subscriber_count,
                 owner_verified=owner_verified,
                 bot_is_admin=bot_is_admin,
