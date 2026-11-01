@@ -28,9 +28,9 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: FRONTEND_URL
-        value: https://nexamarketf.netlify.app
+        value: https://nexamarke.netlify.app
       - key: CORS_ORIGINS
-        value: https://nexamarketf.netlify.app
+        value: https://nexamarke.netlify.app
 
       - key: DATABASE_URL
         fromDatabase:
