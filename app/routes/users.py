@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 
 from app.config import settings
+from app.services.telegram_service import get_telegram_service
 from app.services.wallet_service import WalletService
 from app.deps import CurrentUser, DBSession
 from app.models.schemas import UserResponse, UserUpdate
@@ -170,3 +171,33 @@ async def get_my_wallet(
         "created_at": wallet.created_at,
         "updated_at": wallet.updated_at,
     }
+
+
+# ============================================================
+# PHOTO DE PROFIL (secours)
+# ============================================================
+
+@router.get("/me/photo")
+async def my_photo(current_user: CurrentUser):
+    """
+    Photo Telegram de l'utilisateur connecté, récupérée via le bot.
+    Utilisée par le frontend quand Telegram ne fournit pas `photo_url`
+    (ou quand ce lien ne s'affiche pas). Nécessite le JWT : le frontend
+    la charge avec fetch() puis l'affiche.
+    """
+
+    data = await get_telegram_service().fetch_user_photo(
+        current_user.telegram_id
+    )
+
+    if not data:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Aucune photo de profil disponible.",
+        )
+
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "private, max-age=3600"},
+    )

@@ -125,10 +125,21 @@ async def authenticate_telegram(
         # MISE À JOUR DES DONNÉES TELEGRAM
         # ====================================================
 
-        user.username = telegram_data.get("username")
-        user.first_name = telegram_data.get("first_name")
-        user.last_name = telegram_data.get("last_name")
-        user.photo_url = telegram_data.get("photo_url")
+        # Telegram n'envoie pas toujours photo_url (confidentialité,
+        # mode d'ouverture de la Mini App) : une valeur ABSENTE ne doit
+        # jamais effacer ce qui est déjà enregistré.
+        if telegram_data.get("first_name"):
+            user.first_name = telegram_data["first_name"]
+
+        # last_name / username peuvent légitimement être supprimés par
+        # l'utilisateur ; on ne les met à jour que si first_name est fourni
+        # (donnée Telegram complète).
+        if telegram_data.get("first_name"):
+            user.last_name = telegram_data.get("last_name")
+            user.username = telegram_data.get("username")
+
+        if telegram_data.get("photo_url"):
+            user.photo_url = telegram_data["photo_url"]
 
         await db.commit()
 
