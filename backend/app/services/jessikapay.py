@@ -234,29 +234,6 @@ class JessiKaPayService:
     async def get_deposit_status(self, request_id: str):
         return await self.get_deposit(request_id)
 
-    async def create_payment_request(
-        self,
-        *,
-        jp_number: str,
-        amount: int,
-        reference: str,
-        description: str,
-    ):
-        # ATTENTION : les clés ci-dessous sont déduites du reste du
-        # code. Vérifiez-les avec la documentation JessiKaPay
-        # (endpoint /external/v1/payment-request).
-        payload = {
-            "jp_number": jp_number,
-            "amount": amount,
-            "reference": reference,
-            "description": description,
-        }
-
-        if settings.JESSIKAPAY_WEBHOOK_URL:
-            payload["webhook_url"] = settings.JESSIKAPAY_WEBHOOK_URL
-
-        return await self.create_payment(payload)
-
     async def create_payout(
         self,
         *,
