@@ -11,10 +11,12 @@ RUN pip install --no-cache-dir --upgrade pip \
 
 COPY . .
 
-# FIX : Force Python à reconnaitre 'app' comme module
-RUN touch app/__init__.py || echo "pas de dossier app, on continue"
-RUN ls -la && ls -la app/ || echo "ERREUR: dossier app/ introuvable à la racine !"
+# On se place dans le dossier backend
+WORKDIR /app/backend
+
+# On force les dossiers à être des modules Python
+RUN touch app/__init__.py && touch app/models/__init__.py && touch app/routes/__init__.py && touch app/services/__init__.py
 
 EXPOSE 8000
 
-CMD ["sh", "-c", "echo '[nexmarket] conteneur lance' && python check_env.py && python -c 'import app.main; print(\"[nexmarket] import app.main OK\")' && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+CMD ["sh", "-c", "echo '[nexmarket] conteneur lance' && cd /app && python check_env.py || echo 'check_env non trouvé' && cd /app/backend && python -c 'import app.main; print(\"[nexmarket] import app.main OK\")' && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
