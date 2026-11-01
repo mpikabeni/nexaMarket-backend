@@ -10,4 +10,5 @@ from app.models.favorite import Favorite
 from app.models.platform import PlatformWallet, PlatformLedger
 from app.models.withdrawal import Withdrawal
 from app.models.deposit import Deposit
-__all__=["User","Wallet","WalletOperation","Channel","Listing","Transaction","Message","Report","Review","Favorite","PlatformWallet","PlatformLedger","Withdrawal","Deposit"]
+from app.models.bot_chat import BotChat
+__all__=["User","Wallet","WalletOperation","Channel","Listing","Transaction","Message","Report","Review","Favorite","PlatformWallet","PlatformLedger","Withdrawal","Deposit","BotChat"]
