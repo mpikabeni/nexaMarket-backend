@@ -17,6 +17,10 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_USERNAME: str = ""
     TELEGRAM_WEBHOOK_SECRET: str = ""
 
+    # URL publique de l'API (ex. https://nexamarket-backend.onrender.com).
+    # Render fournit déjà RENDER_EXTERNAL_URL : utilisée si vide.
+    PUBLIC_URL: str = ""
+
     # ========================================================
     # ADMIN
     # ========================================================

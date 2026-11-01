@@ -17,6 +17,7 @@ from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -27,7 +28,7 @@ from sqlalchemy import func, select
 
 from app.config import settings
 from app.db import AsyncSessionLocal
-from app.models import Channel, Transaction, User, Wallet
+from app.models import BotChat, Channel, Listing, Transaction, User, Wallet
 from app.services.telegram_service import TelegramService
 
 
@@ -739,6 +740,123 @@ async def admin_command(
 # /STATS
 # ============================================================
 
+async def extra_stats(db) -> tuple[int, int]:
+    """(canaux où le bot est administrateur, annonces en ligne)."""
+
+    bot_channels = await db.scalar(
+        select(func.count())
+        .select_from(BotChat)
+        .where(
+            BotChat.bot_status == "administrator",
+            BotChat.chat_type == "channel",
+        )
+    )
+
+    live_listings = await db.scalar(
+        select(func.count())
+        .select_from(Listing)
+        .where(Listing.status == "published")
+    )
+
+    return bot_channels or 0, live_listings or 0
+
+
+async def my_chat_member_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+    """
+    Le bot a été ajouté / promu / retiré d'un canal ou d'un groupe.
+
+    Sans ce gestionnaire, rien n'était enregistré : les statistiques
+    n'augmentaient jamais quand on ajoutait le bot à un canal.
+    """
+
+    event = update.my_chat_member
+
+    if event is None or event.chat.type not in (
+        "channel",
+        "supergroup",
+        "group",
+    ):
+        return
+
+    chat = event.chat
+    new_status = event.new_chat_member.status
+    actor = event.from_user.id if event.from_user else None
+
+    async with AsyncSessionLocal() as db:
+        row = (
+            await db.execute(
+                select(BotChat).where(
+                    BotChat.telegram_chat_id == chat.id
+                )
+            )
+        ).scalar_one_or_none()
+
+        if row is None:
+            row = BotChat(
+                telegram_chat_id=chat.id,
+                chat_type=chat.type,
+                added_by_telegram_id=actor,
+                bot_status=new_status,
+            )
+            db.add(row)
+
+        row.chat_type = chat.type
+        row.title = chat.title
+        row.username = chat.username
+        row.bot_status = new_status
+
+        if new_status == "administrator" and actor:
+            row.added_by_telegram_id = actor
+
+        # Met à jour un canal déjà soumis dans l'application.
+        channel = (
+            await db.execute(
+                select(Channel).where(
+                    Channel.telegram_channel_id == chat.id
+                )
+            )
+        ).scalar_one_or_none()
+
+        if channel is not None:
+            member = event.new_chat_member
+            is_admin = new_status == "administrator"
+
+            channel.bot_is_admin = is_admin
+            channel.bot_permissions_verified = bool(
+                is_admin
+                and getattr(member, "can_manage_chat", False)
+                and getattr(member, "can_invite_users", False)
+            )
+
+        await db.commit()
+
+    logger.info(
+        "Bot : %s dans %s (%s) -> %s",
+        chat.type,
+        chat.title,
+        chat.id,
+        new_status,
+    )
+
+    # Prévient la personne qui a ajouté le bot (s'il a déjà ouvert le bot).
+    if new_status == "administrator" and chat.type == "channel" and actor:
+        try:
+            await context.bot.send_message(
+                chat_id=actor,
+                text=(
+                    f"✅ NexMarket est maintenant administrateur de "
+                    f"« {chat.title} ».\n\n"
+                    "Ouvrez l'application, section Vendre, pour mettre "
+                    "ce canal en vente."
+                ),
+            )
+        except Exception:
+            pass
+
+
 async def stats_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
@@ -766,12 +884,15 @@ async def stats_command(
         transactions_count = await db.scalar(
             select(func.count()).select_from(Transaction)
         )
+        bot_channels, live_listings = await extra_stats(db)
 
     text = (
         "📊 <b>Statistiques NexMarket</b>\n\n"
         f"👥 Utilisateurs : <b>{users_count or 0}</b>\n"
         f"🟢 Utilisateurs actifs : <b>{active_users or 0}</b>\n"
-        f"📢 Canaux : <b>{channels_count or 0}</b>\n"
+        f"📢 Canaux soumis : <b>{channels_count or 0}</b>\n"
+        f"🤖 Canaux où le bot est admin : <b>{bot_channels}</b>\n"
+        f"🛍️ Annonces en ligne : <b>{live_listings}</b>\n"
         f"💼 Transactions : <b>{transactions_count or 0}</b>"
     )
 
@@ -1168,11 +1289,15 @@ async def callback_handler(
                 .select_from(Transaction)
             )
 
+            bot_channels, live_listings = await extra_stats(db)
+
         await query.message.reply_text(
             "📊 <b>Statistiques NexMarket</b>\n\n"
             f"👥 Utilisateurs : <b>{users_count or 0}</b>\n"
             f"🟢 Actifs : <b>{active_users or 0}</b>\n"
-            f"📢 Canaux : <b>{channels_count or 0}</b>\n"
+            f"📢 Canaux soumis : <b>{channels_count or 0}</b>\n"
+            f"🤖 Canaux où le bot est admin : <b>{bot_channels}</b>\n"
+            f"🛍️ Annonces en ligne : <b>{live_listings}</b>\n"
             f"💼 Transactions : <b>{transactions_count or 0}</b>",
             parse_mode=ParseMode.HTML,
         )
@@ -1262,6 +1387,10 @@ async def error_handler(
 # BUILD APPLICATION
 # ============================================================
 
+# Types de mises à jour réellement utilisés par le bot.
+BOT_ALLOWED_UPDATES = ["message", "callback_query", "my_chat_member"]
+
+
 def build_application() -> Application:
 
     token = (
@@ -1277,7 +1406,20 @@ def build_application() -> Application:
     application = (
         Application.builder()
         .token(token)
+        .connect_timeout(10)
+        .read_timeout(15)
+        .write_timeout(15)
+        .pool_timeout(10)
+        .get_updates_read_timeout(35)
         .build()
+    )
+
+    # Bot ajouté / promu / retiré d'un canal (alimente les statistiques).
+    application.add_handler(
+        ChatMemberHandler(
+            my_chat_member_handler,
+            ChatMemberHandler.MY_CHAT_MEMBER,
+        )
     )
 
     # --------------------------------------------------------
@@ -1424,7 +1566,8 @@ def main() -> None:
     )
 
     application.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        allowed_updates=BOT_ALLOWED_UPDATES,
     )
 
 

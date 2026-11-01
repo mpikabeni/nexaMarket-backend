@@ -59,12 +59,19 @@ DATABASE_URL, _CONNECT_ARGS = normalize_database_url(
 
 engine = create_async_engine(
     DATABASE_URL,
-    connect_args=_CONNECT_ARGS,
+    # Délais courts : une base injoignable doit échouer vite, pas bloquer
+    # l'application 60 s (valeur par défaut d'asyncpg).
+    connect_args={
+        **_CONNECT_ARGS,
+        "timeout": 10,
+        "command_timeout": 30,
+    },
     echo=False,
     pool_pre_ping=True,
     pool_recycle=1800,
     pool_size=10,
-    max_overflow=20,
+    max_overflow=10,
+    pool_timeout=15,
 )
 
 
