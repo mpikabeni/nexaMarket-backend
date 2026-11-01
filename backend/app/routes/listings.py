@@ -21,6 +21,10 @@ from app.config import settings
 from app.deps import CurrentUser, DBSession
 from app.models.channel import Channel
 from app.models.listing import Listing
+from app.models.review import Review
+from app.models.transaction import Transaction
+from app.models.user import User
+from app.services.media import channel_photo_url
 from app.models.schemas import ListingCreate, ListingUpdate
 
 
@@ -36,16 +40,30 @@ ACTIVE_STATUSES = ("pending_review", "published", "reserved")
 # SÉRIALISATION PUBLIQUE
 # ============================================================
 
-def listing_to_dict(listing: Listing, channel: Channel | None) -> dict:
+def listing_to_dict(
+    listing: Listing,
+    channel: Channel | None,
+    seller: dict | None = None,
+) -> dict:
     """Aucune donnée d'identité vendeur / interne (ni owner_telegram_id)."""
+
+    subscribers = (channel.subscriber_count or 0) if channel else 0
+    price = float(listing.price)
 
     return {
         "id": listing.id,
         "channel_id": listing.channel_id,
         "title": listing.title,
         "category": listing.category,
-        "price": float(listing.price),
+        "price": price,
         "currency": listing.currency,
+        # Repère de comparaison « boutique » : prix pour 1 000 abonnés.
+        "price_per_1k": (
+            round(price / subscribers * 1000)
+            if subscribers > 0
+            else None
+        ),
+        "seller": seller,
         "description": listing.description,
         "status": listing.status,
         "is_public": listing.is_public,
@@ -68,7 +86,7 @@ def listing_to_dict(listing: Listing, channel: Channel | None) -> dict:
                 # alias conservés pour le frontend existant
                 "username": channel.telegram_username,
                 "description": channel.description,
-                "photo_url": channel.photo_url,
+                "photo_url": channel_photo_url(channel),
                 "subscriber_count": channel.subscriber_count,
                 "subscribers_count": channel.subscriber_count,
                 "verified": bool(
@@ -122,6 +140,66 @@ async def _get_own_listing(
     return listing
 
 
+async def load_sellers(db, seller_ids: set[int]) -> dict[int, dict]:
+    """Nom public, note moyenne et ventes terminées des vendeurs."""
+
+    if not seller_ids:
+        return {}
+
+    users = (
+        await db.execute(
+            select(User.id, User.first_name, User.username, User.nexa_id)
+            .where(User.id.in_(seller_ids))
+        )
+    ).all()
+
+    ratings = {
+        row[0]: (float(row[1]), row[2])
+        for row in (
+            await db.execute(
+                select(
+                    Review.reviewed_user_id,
+                    func.avg(Review.rating),
+                    func.count(),
+                )
+                .where(
+                    Review.reviewed_user_id.in_(seller_ids),
+                    Review.is_visible.is_(True),
+                )
+                .group_by(Review.reviewed_user_id)
+            )
+        ).all()
+    }
+
+    sales = dict(
+        (
+            await db.execute(
+                select(Transaction.seller_id, func.count())
+                .where(
+                    Transaction.seller_id.in_(seller_ids),
+                    Transaction.status == "completed",
+                )
+                .group_by(Transaction.seller_id)
+            )
+        ).all()
+    )
+
+    result = {}
+
+    for user_id, first_name, username, nexa_id in users:
+        average, count = ratings.get(user_id, (None, 0))
+
+        result[user_id] = {
+            "name": first_name or (f"@{username}" if username else "Vendeur"),
+            "nexa_id": nexa_id,
+            "rating": round(average, 1) if average is not None else None,
+            "reviews": count,
+            "sales": sales.get(user_id, 0),
+        }
+
+    return result
+
+
 # ============================================================
 # LISTE PUBLIQUE
 # ============================================================
@@ -135,6 +213,7 @@ async def get_listings(
     max_price: Decimal | None = None,
     min_subscribers: int | None = None,
     max_subscribers: int | None = None,
+    sort: str = "recent",
     limit: int = 50,
     offset: int = 0,
 ):
@@ -193,20 +272,31 @@ async def get_listings(
         )
     ).scalar_one()
 
+    order = {
+        "price_asc": Listing.price.asc(),
+        "price_desc": Listing.price.desc(),
+        "subs_desc": Channel.subscriber_count.desc(),
+    }.get(sort, Listing.created_at.desc())
+
     rows = (
         await db.execute(
-            base.order_by(Listing.created_at.desc())
+            base.order_by(order, Listing.id.desc())
             .offset(offset)
             .limit(limit)
         )
     ).all()
+
+    sellers = await load_sellers(db, {l.seller_id for l, _ in rows})
 
     return {
         "status": "success",
         "total": total,
         "limit": limit,
         "offset": offset,
-        "listings": [listing_to_dict(l, c) for l, c in rows],
+        "listings": [
+            listing_to_dict(l, c, sellers.get(l.seller_id))
+            for l, c in rows
+        ],
     }
 
 
@@ -260,9 +350,13 @@ async def get_listing(
     if listing.status not in ("published", "reserved") or not listing.is_public:
         raise HTTPException(404, "Cette annonce n'est plus disponible.")
 
+    sellers = await load_sellers(db, {listing.seller_id})
+
     return {
         "status": "success",
-        "listing": listing_to_dict(listing, channel),
+        "listing": listing_to_dict(
+            listing, channel, sellers.get(listing.seller_id)
+        ),
     }
 
 

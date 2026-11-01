@@ -1,12 +1,16 @@
 import re
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, status
+import time
+
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import select
 
+from app.config import settings
 from app.deps import CurrentUser, DBSession
 from app.models.channel import Channel
 from app.models.schemas import ChannelCreate
+from app.services.media import channel_photo_url
 from app.services.telegram_service import (
     get_telegram_service,
     TelegramService,
@@ -39,7 +43,7 @@ def serialize_channel(
         "id": channel.id,
         "telegram_username": channel.telegram_username,
         "title": channel.title,
-        "photo_url": channel.photo_url,
+        "photo_url": channel_photo_url(channel),
         "description": channel.description,
         "subscriber_count": channel.subscriber_count,
         "bot_is_admin": channel.bot_is_admin,
@@ -182,11 +186,40 @@ async def submit_channel(
             ),
         )
 
+    bot_name = (
+        f"@{settings.TELEGRAM_BOT_USERNAME}"
+        if settings.TELEGRAM_BOT_USERNAME
+        else "le bot NexMarket"
+    )
+
+    # Messages précis : avant, l'utilisateur voyait seulement « échec ».
+    if not verification.bot_is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Ajoutez {bot_name} comme administrateur de ce canal "
+                "(Canal → Administrateurs → Ajouter), puis réessayez."
+            ),
+        )
+
+    if not verification.bot_permissions_verified:
+        missing = await telegram_service.get_missing_permissions(channel_id)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"{bot_name} est administrateur mais il lui manque "
+                "le droit de : "
+                + (", ".join(missing) if missing else "gérer le canal")
+                + ". Activez-le puis réessayez."
+            ),
+        )
+
     if not verification.owner_verified:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "Seul le propriétaire du canal peut le mettre en vente."
+                "Seul le propriétaire (créateur) du canal peut le mettre "
+                "en vente. Utilisez le compte Telegram qui a créé le canal."
             ),
         )
 
@@ -561,3 +594,54 @@ async def remove_channel(
             channel.verification_status
         ),
     }
+
+
+# ============================================================
+# PHOTO D'UN CANAL (proxy : le token du bot n'est jamais exposé)
+# ============================================================
+
+_PHOTO_CACHE: dict[int, tuple[float, bytes]] = {}
+_PHOTO_TTL_SECONDS = 6 * 3600
+_PHOTO_CACHE_MAX = 300
+
+
+@router.get("/{channel_id}/photo")
+async def channel_photo(channel_id: int, db: DBSession):
+    cached = _PHOTO_CACHE.get(channel_id)
+
+    if cached and cached[0] > time.time():
+        data = cached[1]
+    else:
+        channel = (
+            await db.execute(
+                select(Channel).where(
+                    Channel.id == channel_id,
+                    Channel.is_active.is_(True),
+                )
+            )
+        ).scalar_one_or_none()
+
+        if (
+            channel is None
+            or not channel.photo_url
+            or not channel.photo_url.startswith("tg:")
+        ):
+            raise HTTPException(status_code=404, detail="Photo introuvable.")
+
+        data = await get_telegram_service().fetch_photo(
+            channel.photo_url[3:]
+        )
+
+        if not data:
+            raise HTTPException(status_code=404, detail="Photo indisponible.")
+
+        if len(_PHOTO_CACHE) >= _PHOTO_CACHE_MAX:
+            _PHOTO_CACHE.clear()
+
+        _PHOTO_CACHE[channel_id] = (time.time() + _PHOTO_TTL_SECONDS, data)
+
+    return Response(
+        content=data,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
