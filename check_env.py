@@ -20,6 +20,7 @@ OPTIONAL = [
     "JESSIKAPAY_API_URL",
     "JESSIKAPAY_API_KEY",
     "JESSIKAPAY_API_SECRET",
+    "JESSIKAPAY_WEBHOOK_SECRET",
     "NEXA_JP_NUMBER",
     "TELEGRAM_BOT_USERNAME",
     "CORS_ORIGINS",
@@ -43,7 +44,7 @@ for name, help_text in REQUIRED.items():
             "DATABASE_URL doit commencer par postgresql:// ou postgres://."
         )
 
-admin_id = os.environ.get("ADMIN_TELEGRAM_ID", "").strip()
+admin_id = os.environ.get("uADMIN_TELEGRAM_ID", "").strip()
 if admin_id and not admin_id.lstrip("-").isdigit():
     problems.append("ADMIN_TELEGRAM_ID doit être un nombre (votre ID Telegram).")
 
