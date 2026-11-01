@@ -1,0 +1,19 @@
+FICHIERS A REMPLACER (backend) - suppression du webhook JessiKaPay
+===================================================================
+
+1) Copiez tous les fichiers de ce dossier dans votre depot, en respectant
+   les chemins (app/..., render.yaml, check_env.py). Ils ecrasent les anciens.
+
+2) SUPPRIMEZ ce fichier de votre depot :
+     - app/routes/webhooks.py
+
+3) Sur Render, vous pouvez supprimer les variables d'environnement
+   JESSIKAPAY_WEBHOOK_URL et JESSIKAPAY_WEBHOOK_SECRET (elles sont ignorees).
+
+Comment ca marche maintenant
+- Depot : le serveur interroge JessiKaPay (toutes les 30 s, et quand
+  l'utilisateur revient dans l'application) et credite le wallet.
+- Retrait : la reponse du payout decide (accepte -> termine, refuse ->
+  fonds rendus). Cas rare "statut inconnu" (timeout) : l'admin tranche avec
+  GET /api/admin/withdrawals puis POST /api/admin/withdrawals/{id}/resolve
+  {"action": "complete" ou "fail"} apres verification dans JessiKaPay.

@@ -9,7 +9,7 @@
 #  - suppression des variables MONEYFUSION_* (fournisseur jamais lu
 #    par le code) ;
 #  - ajout des variables JESSIKAPAY_*, ADMIN_TELEGRAM_ID,
-#    JESSIKAPAY_WEBHOOK_SECRET qui manquaient ;
+#    qui manquaient ; pas de webhook JessiKaPay (dépôts vérifiés par polling) ;
 #  - nom du service aligné sur l'URL appelée par le frontend.
 # =========================================================
 
@@ -71,14 +71,6 @@ services:
       - key: JESSIKAPAY_API_SECRET
         sync: false
       - key: NEXA_JP_NUMBER
-        sync: false
-      # URL à donner à JessiKaPay :
-      #   https://nexamarket-backend.onrender.com/api/webhooks/jessikapay
-      # (événements utilisés : deposit.completed et credit.completed)
-      # + le même secret en en-tête X-Webhook-Secret (ou ?token=...)
-      - key: JESSIKAPAY_WEBHOOK_URL
-        sync: false
-      - key: JESSIKAPAY_WEBHOOK_SECRET
         sync: false
 
 databases:
