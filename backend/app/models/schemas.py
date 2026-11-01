@@ -310,6 +310,11 @@ class ReportResolveRequest(BaseModel):
     result_status: Literal["resolved", "rejected"] = "resolved"
 
 
+class WithdrawalResolveRequest(BaseModel):
+    action: Literal["complete", "fail"]
+    note: str | None = Field(default=None, max_length=1000)
+
+
 class RejectRequest(BaseModel):
     reason: str = Field(..., min_length=3, max_length=2000)
 
