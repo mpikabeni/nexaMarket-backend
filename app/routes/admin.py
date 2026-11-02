@@ -72,21 +72,12 @@ async def admin_login(
     # Vérification de la configuration
     # --------------------------------------------------------
 
-    if not settings.ADMIN_TELEGRAM_ID:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=(
-                "L'identifiant Telegram administrateur "
-                "n'est pas configuré."
-            ),
-        )
-
     if not settings.ADMIN_CODE:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=(
-                "Le code administrateur "
-                "n'est pas configuré."
+                "Le code administrateur n'est pas configuré "
+                "(variable ADMIN_CODE sur Render)."
             ),
         )
 
@@ -162,21 +153,6 @@ async def admin_login(
         )
 
     # --------------------------------------------------------
-    # Vérification que c'est bien l'administrateur
-    # --------------------------------------------------------
-
-    if telegram_id != int(
-        settings.ADMIN_TELEGRAM_ID
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Vous n'êtes pas autorisé "
-                "à accéder à l'administration."
-            ),
-        )
-
-    # --------------------------------------------------------
     # Recherche du compte utilisateur
     # --------------------------------------------------------
 
@@ -194,6 +170,31 @@ async def admin_login(
             detail=(
                 "Votre compte NexMarket est introuvable. "
                 "Utilisez d'abord /start sur le bot."
+            ),
+        )
+
+    # --------------------------------------------------------
+    # Est-ce bien un administrateur ?
+    # --------------------------------------------------------
+    # MÊME règle que le bot (is_admin_user) : l'ID Telegram défini dans
+    # ADMIN_TELEGRAM_ID, OU un compte déjà marqué administrateur.
+    # Avant, la Mini App n'acceptait que ADMIN_TELEGRAM_ID : le bot te
+    # reconnaissait admin mais la Mini App répondait « Accès refusé ».
+    configured_admin = bool(settings.ADMIN_TELEGRAM_ID) and (
+        telegram_id == int(settings.ADMIN_TELEGRAM_ID)
+    )
+
+    if not (configured_admin or user.is_admin):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "Ce compte Telegram n'est pas administrateur de NexMarket."
+                + (
+                    ""
+                    if settings.ADMIN_TELEGRAM_ID
+                    else " Aucun ADMIN_TELEGRAM_ID n'est configuré "
+                    "sur le serveur."
+                )
             ),
         )
 

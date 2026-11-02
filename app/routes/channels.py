@@ -1,6 +1,7 @@
 import re
 from datetime import datetime, timezone
 
+import asyncio
 import time
 
 from fastapi import APIRouter, HTTPException, Response, status
@@ -8,6 +9,7 @@ from sqlalchemy import select
 
 from app.config import settings
 from app.deps import CurrentUser, DBSession
+from app.models.bot_chat import BotChat
 from app.models.channel import Channel
 from app.models.schemas import ChannelCreate
 from app.services.media import channel_photo_url
@@ -340,6 +342,76 @@ async def submit_channel(
 # ============================================================
 # MY CHANNELS
 # ============================================================
+
+@router.get("/detected")
+async def detected_channels(
+    current_user: CurrentUser,
+    db: DBSession,
+):
+    """
+    Canaux où CET utilisateur a ajouté le bot comme administrateur
+    (détectés par le bot via `my_chat_member`). Permet de choisir son canal
+    dans une liste, sans saisir de @username : fonctionne aussi pour un
+    canal privé. Les droits du bot sont revérifiés en direct.
+    """
+
+    chats = (
+        await db.execute(
+            select(BotChat)
+            .where(
+                BotChat.chat_type == "channel",
+                BotChat.bot_status == "administrator",
+                BotChat.added_by_telegram_id == current_user.telegram_id,
+            )
+            .order_by(BotChat.updated_at.desc())
+            .limit(10)
+        )
+    ).scalars().all()
+
+    if not chats:
+        return {"channels": []}
+
+    submitted = {
+        channel.telegram_channel_id: channel
+        for channel in (
+            await db.execute(
+                select(Channel).where(
+                    Channel.owner_id == current_user.id,
+                    Channel.telegram_channel_id.in_(
+                        [chat.telegram_chat_id for chat in chats]
+                    ),
+                )
+            )
+        ).scalars()
+    }
+
+    service = get_telegram_service()
+
+    missing_rights = await asyncio.gather(
+        *[
+            service.get_missing_permissions(chat.telegram_chat_id)
+            for chat in chats
+        ]
+    )
+
+    return {
+        "channels": [
+            {
+                "telegram_channel_id": chat.telegram_chat_id,
+                "title": chat.title,
+                "username": chat.username,
+                "rights_ok": not missing,
+                "missing_rights": missing,
+                "channel_id": (
+                    submitted[chat.telegram_chat_id].id
+                    if chat.telegram_chat_id in submitted
+                    else None
+                ),
+            }
+            for chat, missing in zip(chats, missing_rights)
+        ]
+    }
+
 
 @router.get("/mine")
 async def get_my_channels(
