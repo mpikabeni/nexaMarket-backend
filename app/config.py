@@ -6,7 +6,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     APP_NAME: str = "NexMarket"
-    APP_VERSION: str = "1.0.0"
+    APP_VERSION: str = "1.0.11"
     ENVIRONMENT: str = "production"
 
     FRONTEND_URL: str = "https://nexamarketf.netlify.app"
@@ -17,9 +17,23 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_USERNAME: str = ""
     TELEGRAM_WEBHOOK_SECRET: str = ""
 
-    # URL publique de l'API (ex. https://nexamarket-backend.onrender.com).
+    # URL publique de l'API (ex. https://nexamarket-backend-ffea.onrender.com).
     # Render fournit déjà RENDER_EXTERNAL_URL : utilisée si vide.
     PUBLIC_URL: str = ""
+
+    # ========================================================
+    # CANAL OBLIGATOIRE (le bot n'est utilisable qu'après l'avoir rejoint)
+    # ========================================================
+    # Le bot doit être ADMINISTRATEUR de ce canal pour pouvoir vérifier
+    # l'abonnement des utilisateurs.
+
+    REQUIRED_CHANNEL: str = "@Nexa_CG"
+    REQUIRED_CHANNEL_URL: str = "https://t.me/Nexa_CG"
+
+    # Mini App : l'utilisateur doit d'abord avoir démarré le bot (/start) ET
+    # être membre du canal ci-dessus. Mettre "false" sur Render pour couper
+    # temporairement cette obligation (tests).
+    REQUIRE_BOT_AND_CHANNEL: bool = True
 
     # ========================================================
     # ADMIN

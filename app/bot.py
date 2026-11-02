@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import uuid
 from decimal import Decimal
 from typing import Optional
@@ -13,14 +14,17 @@ from telegram import (
     Update,
     WebAppInfo,
 )
-from telegram.constants import ParseMode
+from telegram.constants import ChatMemberStatus, ChatType, ParseMode
+from telegram.error import TelegramError
 from telegram.ext import (
     Application,
+    ApplicationHandlerStop,
     CallbackQueryHandler,
     ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
+    TypeHandler,
     filters,
 )
 
@@ -51,7 +55,7 @@ logger = logging.getLogger("nexmarket.bot")
 telegram_service = TelegramService()
 
 FRONTEND_URL = (
-    settings.FRONTEND_URL or "https://nexamarke.netlify.app"
+    settings.FRONTEND_URL or "https://nexamarketf.netlify.app"
 ).rstrip("/")
 
 
@@ -161,6 +165,159 @@ async def admin_required(update: Update) -> bool:
 
 
 # ============================================================
+# CANAL OBLIGATOIRE : il faut rejoindre @Nexa_CG pour utiliser le bot
+# ============================================================
+# Un « portier » (groupe -1) s'exécute AVANT toutes les commandes et tous
+# les boutons. Les administrateurs NexMarket en sont dispensés.
+# Si Telegram ne permet pas de vérifier (bot non administrateur du canal,
+# canal introuvable, réseau), l'accès n'est PAS bloqué pour tout le monde :
+# l'erreur est écrite dans les logs (« Vérification du canal impossible »).
+
+REQUIRED_CHANNEL = (settings.REQUIRED_CHANNEL or "@Nexa_CG").strip()
+REQUIRED_CHANNEL_URL = (
+    settings.REQUIRED_CHANNEL_URL or "https://t.me/Nexa_CG"
+).strip()
+
+CHECK_SUBSCRIPTION_CALLBACK = "check_subscription"
+MEMBER_CACHE_SECONDS = 600
+_member_cache: dict[int, float] = {}
+
+
+def join_channel_keyboard() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📢 Rejoindre le canal NEXA",
+                    url=REQUIRED_CHANNEL_URL,
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "✅ J'ai rejoint le canal",
+                    callback_data=CHECK_SUBSCRIPTION_CALLBACK,
+                )
+            ],
+        ]
+    )
+
+
+async def is_channel_member(bot, user_id: int) -> Optional[bool]:
+    """True = membre, False = pas membre, None = vérification impossible."""
+
+    cached_until = _member_cache.get(user_id)
+
+    if cached_until and cached_until > time.monotonic():
+        return True
+
+    try:
+        member = await bot.get_chat_member(
+            chat_id=REQUIRED_CHANNEL,
+            user_id=user_id,
+        )
+
+    except TelegramError as exc:
+        logger.error(
+            "Vérification du canal impossible (%s) : %s. "
+            "Le bot doit être administrateur de %s.",
+            type(exc).__name__,
+            exc,
+            REQUIRED_CHANNEL,
+        )
+        return None
+
+    if member.status in (
+        ChatMemberStatus.OWNER,
+        ChatMemberStatus.ADMINISTRATOR,
+        ChatMemberStatus.MEMBER,
+    ) or (
+        member.status == ChatMemberStatus.RESTRICTED
+        and getattr(member, "is_member", False)
+    ):
+        if len(_member_cache) > 5000:
+            _member_cache.clear()
+
+        _member_cache[user_id] = time.monotonic() + MEMBER_CACHE_SECONDS
+        return True
+
+    _member_cache.pop(user_id, None)
+    return False
+
+
+async def subscription_gate(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
+    user = update.effective_user
+    chat = update.effective_chat
+    query = update.callback_query
+
+    # Seuls les messages et boutons en conversation privée sont contrôlés.
+    if (
+        not user
+        or user.is_bot
+        or not chat
+        or chat.type != ChatType.PRIVATE
+        or (update.message is None and query is None)
+    ):
+        return
+
+    if await is_admin_user(user.id):
+        return
+
+    is_check = bool(
+        query and query.data == CHECK_SUBSCRIPTION_CALLBACK
+    )
+
+    member = await is_channel_member(context.bot, user.id)
+
+    # Membre (ou vérification impossible) : accès normal.
+    if member is not False:
+
+        if is_check:
+            await query.answer("✅ Merci, bienvenue !")
+
+            try:
+                await query.message.delete()
+            except Exception:
+                pass
+
+            await start_command(update, context)
+            raise ApplicationHandlerStop
+
+        return
+
+    # Pas membre : accès refusé.
+    if query:
+        await query.answer(
+            "❌ Rejoins d'abord le canal NEXA, puis réessaie."
+            if is_check
+            else "Rejoins d'abord le canal NEXA pour utiliser le bot.",
+            show_alert=True,
+        )
+
+        if is_check:
+            raise ApplicationHandlerStop
+
+    target = update.effective_message
+
+    if target:
+        await target.reply_text(
+            "🔒 <b>Accès réservé aux membres</b>\n\n"
+            "Pour utiliser <b>NexMarket</b>, tu dois d'abord rejoindre "
+            "notre canal officiel <b>NEXA</b>.\n\n"
+            "1️⃣ Appuie sur <b>Rejoindre le canal NEXA</b>\n"
+            "2️⃣ Reviens ici et appuie sur "
+            "<b>J'ai rejoint le canal</b>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=join_channel_keyboard(),
+        )
+
+    raise ApplicationHandlerStop
+
+
+# ============================================================
 # /START
 # ============================================================
 
@@ -169,7 +326,9 @@ async def start_command(
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
 
-    if not update.effective_user or not update.message:
+    message = update.effective_message
+
+    if not update.effective_user or not message:
         return
 
     telegram_user = update.effective_user
@@ -325,7 +484,7 @@ async def start_command(
                 menu_error,
             )
 
-        await update.message.reply_text(
+        await message.reply_text(
             text,
             parse_mode=ParseMode.HTML,
             reply_markup=main_keyboard(),
@@ -339,7 +498,7 @@ async def start_command(
             exc,
         )
 
-        await update.message.reply_text(
+        await message.reply_text(
             "❌ <b>Impossible de démarrer NexMarket</b>\n\n"
             "Une erreur est survenue lors de la connexion "
             "à votre compte.\n\n"
@@ -1433,6 +1592,12 @@ def build_application() -> Application:
         .pool_timeout(10)
         .get_updates_read_timeout(35)
         .build()
+    )
+
+    # Canal obligatoire : exécuté avant toutes les commandes / boutons.
+    application.add_handler(
+        TypeHandler(Update, subscription_gate),
+        group=-1,
     )
 
     # Bot ajouté / promu / retiré d'un canal (alimente les statistiques).
