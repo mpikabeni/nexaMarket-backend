@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
 import hmac
+import time
 
 from fastapi import (
     APIRouter,
     Header,
     HTTPException,
+    Request,
     status,
 )
 from pydantic import BaseModel
@@ -44,9 +46,48 @@ class AdminLoginRequest(BaseModel):
     code: str
 
 
+# Limite d'essais : 5 échecs / 10 min par adresse IP (mémoire du processus ;
+# le service tourne avec un seul worker). Évite de deviner le code admin.
+_LOGIN_MAX_FAILURES = 5
+_LOGIN_WINDOW_SECONDS = 600
+_login_failures: dict[str, list[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-for", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "inconnu"
+
+
+def _login_check(ip: str) -> None:
+    now = time.monotonic()
+    recent = [
+        t for t in _login_failures.get(ip, [])
+        if now - t < _LOGIN_WINDOW_SECONDS
+    ]
+    if recent:
+        _login_failures[ip] = recent
+    else:
+        _login_failures.pop(ip, None)
+
+    if len(recent) >= _LOGIN_MAX_FAILURES:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Trop de tentatives. Réessaie dans quelques minutes.",
+        )
+
+
+def _login_failed(ip: str) -> None:
+    _login_failures.setdefault(ip, []).append(time.monotonic())
+    if len(_login_failures) > 1000:
+        _login_failures.clear()
+
+
 @router.post("/login")
 async def admin_login(
     payload: AdminLoginRequest,
+    request: Request,
     db: DBSession,
     telegram_init_data: str | None = Header(
         default=None,
@@ -85,6 +126,9 @@ async def admin_login(
     # Vérification du code administrateur
     # --------------------------------------------------------
 
+    ip = _client_ip(request)
+    _login_check(ip)
+
     if not payload.code:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -95,6 +139,7 @@ async def admin_login(
         str(payload.code),
         str(settings.ADMIN_CODE),
     ):
+        _login_failed(ip)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Code administrateur incorrect.",

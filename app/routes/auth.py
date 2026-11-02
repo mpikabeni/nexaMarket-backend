@@ -11,6 +11,7 @@ from app.config import settings
 from app.db import get_db
 from app.models.user import User
 from app.models.wallet import Wallet
+from app.services.telegram_service import get_telegram_service
 
 
 router = APIRouter(
@@ -21,6 +22,38 @@ router = APIRouter(
 
 class TelegramAuthRequest(BaseModel):
     init_data: str
+
+
+_ACCESS_MESSAGES = {
+    "bot_not_started": (
+        "Démarre d'abord le bot NexMarket (appuie sur « Démarrer » / "
+        "/start), puis reviens ouvrir la Mini App."
+    ),
+    "channel_required": (
+        "Pour utiliser NexMarket, rejoins d'abord notre canal officiel "
+        "NEXA, puis reviens ouvrir la Mini App."
+    ),
+}
+
+
+async def _access_denied(code: str) -> HTTPException:
+    """403 structuré : le frontend affiche un écran avec les boutons."""
+
+    service = get_telegram_service()
+    username = await service.bot_username()
+
+    return HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail={
+            "code": code,
+            "message": _ACCESS_MESSAGES[code],
+            "bot_username": username,
+            "bot_url": (
+                f"https://t.me/{username}?start=app" if username else ""
+            ),
+            "channel_url": settings.REQUIRED_CHANNEL_URL,
+        },
+    )
 
 
 # POST /api/auth  et  POST /api/auth/telegram  (même comportement)
@@ -47,6 +80,25 @@ async def authenticate_telegram(
     )
 
     user = result.scalar_one_or_none()
+
+    # ========================================================
+    # OBLIGATION : bot démarré + canal NEXA rejoint
+    # ========================================================
+    # Les administrateurs en sont dispensés. Aucun compte n'est créé tant
+    # que l'utilisateur n'a pas démarré le bot.
+
+    is_admin_account = (
+        bool(settings.ADMIN_TELEGRAM_ID)
+        and telegram_id == settings.ADMIN_TELEGRAM_ID
+    ) or bool(user and user.is_admin)
+
+    if settings.REQUIRE_BOT_AND_CHANNEL and not is_admin_account:
+        missing = await get_telegram_service().check_user_access(
+            int(telegram_id)
+        )
+
+        if missing:
+            raise await _access_denied(missing)
 
     # ========================================================
     # CRÉATION DU COMPTE
