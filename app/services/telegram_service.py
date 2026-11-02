@@ -8,10 +8,14 @@ import time
 
 from telegram import Bot
 from telegram.request import HTTPXRequest
-from telegram.error import TelegramError
-from telegram.constants import ChatMemberStatus
+from telegram.error import BadRequest, Forbidden, TelegramError
+from telegram.constants import ChatAction, ChatMemberStatus
+
+import logging
 
 from app.config import settings
+
+logger = logging.getLogger("nexmarket.telegram")
 
 
 class TelegramServiceError(Exception):
@@ -82,6 +86,94 @@ class TelegramService:
         Ferme proprement la session HTTP du bot.
         """
         await self.bot.shutdown()
+
+    # ========================================================
+    # ACCÈS À LA MINI APP : bot démarré + canal rejoint
+    # ========================================================
+
+    ACCESS_CACHE_SECONDS = 300
+
+    async def bot_username(self) -> str:
+        username = (settings.TELEGRAM_BOT_USERNAME or "").strip().lstrip("@")
+
+        if username:
+            return username
+
+        try:
+            return (await self._get_me()).username or ""
+        except Exception:
+            return ""
+
+    async def check_user_access(self, telegram_user_id: int) -> str | None:
+        """
+        Retourne None si l'accès est autorisé, sinon :
+          "bot_not_started"  : l'utilisateur n'a jamais démarré le bot
+                               (ou l'a bloqué) ;
+          "channel_required" : l'utilisateur n'est pas membre du canal.
+
+        Si Telegram ne permet pas de vérifier (réseau, bot non administrateur
+        du canal...), l'accès n'est PAS bloqué : l'erreur est écrite dans les
+        logs (le bot doit être administrateur du canal obligatoire).
+        """
+
+        cache = self.__dict__.setdefault("_access_cache", {})
+        cached_until = cache.get(telegram_user_id)
+
+        if cached_until and cached_until > time.monotonic():
+            return None
+
+        # 1) Le bot ne peut écrire qu'à un utilisateur qui l'a démarré :
+        #    « Forbidden » = jamais démarré (ou bot bloqué). Aucun message
+        #    n'est visible côté utilisateur (simple action « typing »).
+        try:
+            await self.bot.send_chat_action(
+                chat_id=telegram_user_id,
+                action=ChatAction.TYPING,
+            )
+        except Forbidden:
+            return "bot_not_started"
+        except BadRequest as exc:
+            if "chat not found" in str(exc).lower():
+                return "bot_not_started"
+            logger.error("Vérification du démarrage du bot impossible : %s", exc)
+        except TelegramError as exc:
+            logger.error("Vérification du démarrage du bot impossible : %s", exc)
+
+        # 2) Membre du canal obligatoire ?
+        channel = (settings.REQUIRED_CHANNEL or "").strip()
+
+        if channel:
+            try:
+                member = await self.bot.get_chat_member(
+                    chat_id=channel,
+                    user_id=telegram_user_id,
+                )
+            except TelegramError as exc:
+                logger.error(
+                    "Vérification du canal impossible (%s) : %s. "
+                    "Le bot doit être administrateur de %s.",
+                    type(exc).__name__,
+                    exc,
+                    channel,
+                )
+            else:
+                is_member = member.status in (
+                    ChatMemberStatus.OWNER,
+                    ChatMemberStatus.ADMINISTRATOR,
+                    ChatMemberStatus.MEMBER,
+                ) or (
+                    member.status == ChatMemberStatus.RESTRICTED
+                    and getattr(member, "is_member", False)
+                )
+
+                if not is_member:
+                    return "channel_required"
+
+        if len(cache) > 5000:
+            cache.clear()
+
+        cache[telegram_user_id] = time.monotonic() + self.ACCESS_CACHE_SECONDS
+        return None
 
     async def get_channel(self, channel_id: int):
         """
