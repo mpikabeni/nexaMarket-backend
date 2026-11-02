@@ -66,6 +66,21 @@ endpoint `lookup` collé après un `return` · utilisateurs créés par le bot s
 - **Retraits** : la réponse du payout fait foi (accepté → fonds consommés, refusé → fonds rendus). Cas rare « statut inconnu » (timeout) : `GET /api/admin/withdrawals` puis `POST /api/admin/withdrawals/{id}/resolve` (`complete` / `fail`) après vérification chez JessiKaPay.
 - ⚠️ Hypothèse : un payout accepté (HTTP 2xx) = versement effectué, sauf statut `pending`/`processing`/`failed` dans la réponse.
 
+**« Not Found », « trop de temps », accès admin refusé, canal introuvable, Nexa ID « En cours »**
+- **Mode diagnostic** (`app/entry.py`) : si le serveur ne peut pas démarrer (variable manquante ou invalide, erreur d'import), il démarre quand même en mode diagnostic et `GET /health` renvoie **la cause exacte** (503). La Mini App l'affiche dans son bandeau (« Serveur indisponible : … »). Plus de crash silencieux en boucle. Ouvre `https://<ton-api>/health` dans un navigateur : si tu vois `{"status":"healthy"...}` l'API tourne.
+- **Messages d'erreur précis** : un « Not Found » brut signifie *route absente du serveur* ; la Mini App affiche maintenant « Route introuvable sur le serveur (GET /xxx)… serveur pas à jour ou adresse de l'API incorrecte ». Les pages HTML d'hébergeur sont remplacées par « Serveur indisponible (HTTP …) ».
+- **Délai serveur** : toute requête > 28 s est interrompue par le serveur avec un message clair (504), au lieu de laisser la Mini App attendre. La base de données qui tarde au démarrage ne fait plus tomber le service (nouvel essai toutes les 10 s, état dans `/health`).
+- **Accès admin refusé** : la Mini App n'acceptait que l'ID défini dans `ADMIN_TELEGRAM_ID`, alors que le bot te reconnaît aussi si ton compte est déjà admin en base. **Même règle maintenant** (ID configuré OU compte admin). Les erreurs sont distinctes : « Code incorrect », « Accès refusé » (compte non admin), « Configuration du serveur » (`ADMIN_CODE` absent), « Compte introuvable ».
+- **Canal introuvable** : le bot, quand on l'ajoute comme administrateur, **vérifie ses droits** et te dit en message privé s'il en manque. La page Vendre affiche **« Canaux détectés »** (`GET /channels/detected`) : on touche son canal au lieu de taper un @username (fonctionne aussi pour un canal **privé**, que `@username` ne peut pas retrouver). En cas d'échec, la saisie est conservée et la raison s'affiche dans le formulaire.
+- **Nexa ID « En cours… »** : il vient bien du serveur, mais n'apparaissait pas si `/users/me` échouait. Il est maintenant lu aussi dans la réponse de connexion (`/auth/telegram`), mise en cache, et re-demandé automatiquement.
+
+**Splash de 10 secondes, nom et photo de l'utilisateur**
+- Le splash reste **au moins 10 s** (barre de progression + étapes : connexion, profil, canaux), et jusqu'à ce que profil et accueil soient prêts (60 s maximum). Il affiche la **photo et le nom** de l'utilisateur dès qu'ils sont connus.
+- **Bug du nom** : `{...telegramUser, ...backendUser}` laissait un `first_name: null` du backend écraser le vrai prénom Telegram. Corrigé (priorité Telegram > compte NexMarket > cache local ; une valeur vide ne remplace jamais une valeur connue). Un seul calcul (`getProfile`) sert au splash, à l'en-tête et à la page Profil.
+- **Bug de la photo (backend)** : chaque connexion sans `photo_url` **effaçait** la photo enregistrée ; corrigé.
+- **Photo de secours** : si le lien Telegram est absent ou ne s'affiche pas, le frontend récupère la photo via `GET /api/users/me/photo` (le bot demande la photo à Telegram). Initiales affichées si aucune photo n'est disponible.
+- ⚠️ Cette photo de secours ne fonctionne que si l'utilisateur a déjà ouvert le bot (règle Telegram).
+
 **Lenteurs, bot muet, mise en vente en échec (dernière série)**
 - **Serveur Render gratuit qui s'endort** (après ~15 min sans requête, le bot en « polling » ne compte pas) → le bot ne répondait plus. Ajout d'un **keep-alive** (l'API se contacte via son URL publique toutes les 8 min) et d'un **superviseur** qui relance le bot s'il s'arrête. Le bot démarre désormais **en arrière-plan** : l'API répond tout de suite. Pour une fiabilité totale : offre payante, ou un moniteur externe (UptimeRobot) sur `/health`.
 - **Démarrage plus rapide** : l'application n'est plus importée deux fois au lancement ; réponses JSON compressées ; connexion HTTP JessiKaPay réutilisée ; vérifications Telegram d'un canal faites **en parallèle** ; `get_me` mis en cache.
@@ -84,7 +99,7 @@ Maintenant : le canal (propriétaire + bot vérifiés par Telegram) peut être �
 **Admin** : ajout de `/admin/me`, `/admin/channels`, `/admin/messages`, `/admin/listings/{id}`, `/admin/platform-wallet` ; tableau de bord corrigé (statut `transfer_started`, solde plateforme).
 
 **Divers** : expiration des réservations impayées · annonce « vendue » en fin de transaction · validations (montants NaN, numéro JP, plafonds) ·
-Dockerfile non-root + healthcheck · `render.yaml` : worker supprimé, variables JessiKaPay/admin ajoutées, **nom du service = `nexamarket-backend`** (l'URL appelée par le frontend).
+Dockerfile non-root + healthcheck · `render.yaml` : worker supprimé, variables JessiKaPay/admin ajoutées, **URL réelle du service = `https://nexamarket-backend-ffea.onrender.com`** (celle appelée par le frontend).
 
 ## 4. Corrections — frontend
 
@@ -112,3 +127,20 @@ Dockerfile non-root + healthcheck · `render.yaml` : worker supprimé, variables
 - Fenêtre de panne très étroite : si le serveur s'arrête exactement entre le blocage des fonds et l'écriture de la transaction, les fonds restent bloqués (visible dans `wallet_operations`, à régulariser à la main).
 - `deposit_service.py` / `withdrawal_service.py` ne sont appelés par aucune route (code dormant, rendu cohérent).
 - Pas d'Alembic : les évolutions de schéma passent par SQL manuel. Base Render « free » à remplacer avant la production.
+
+## Canal obligatoire (@Nexa_CG) — bot.py
+
+- Un « portier » (`subscription_gate`, groupe -1) s'exécute avant toute commande et tout bouton du bot, en conversation privée : un utilisateur qui n'est pas membre de `@Nexa_CG` reçoit « Accès réservé aux membres » avec les boutons **Rejoindre le canal NEXA** / **J'ai rejoint le canal** ; le bouton relance `/start` dès que l'abonnement est confirmé.
+- Les administrateurs NexMarket sont dispensés. Un membre vérifié est mis en cache 10 minutes (moins d'appels à Telegram).
+- **Le bot doit être administrateur du canal @Nexa_CG**, sinon Telegram refuse la vérification. Dans ce cas le bot ne bloque pas tout le monde : l'erreur « Vérification du canal impossible » est écrite dans les logs Render.
+- Réglable par variables Render (facultatif) : `REQUIRED_CHANNEL` (défaut `@Nexa_CG`) et `REQUIRED_CHANNEL_URL` (défaut `https://t.me/Nexa_CG`).
+- Limite : ce contrôle protège le **bot**. Le bouton « Ouvrir NexMarket » / le menu de la Mini App déjà installés chez un utilisateur ouvrent l'application sans passer par un message au bot.
+- Autres changements : `start_command` fonctionne aussi depuis un bouton ; URL de repli du frontend corrigée (`nexamarketf.netlify.app`).
+
+## Mini App : bot démarré + canal obligatoires (`/auth/telegram`)
+
+- À chaque ouverture de la Mini App, `POST /auth/telegram` vérifie (hors administrateurs) que l'utilisateur **a démarré le bot** (le bot ne peut écrire qu'à quelqu'un qui l'a démarré : action invisible « typing ») et qu'il est **membre de @Nexa_CG**. Sinon : HTTP 403 avec `detail = {code, message, bot_url, channel_url}` (`bot_not_started` ou `channel_required`). **Aucun compte n'est plus créé** par la Mini App tant que le bot n'a pas été démarré.
+- Frontend : écran plein écran bloquant (au-dessus du splash) avec **Démarrer le bot**, **Rejoindre le canal NEXA** et **J'ai terminé, réessayer**.
+- Si Telegram ne permet pas de vérifier (réseau, bot non administrateur du canal) l'accès n'est pas bloqué et l'erreur est écrite dans les logs. Résultat mis en cache 5 min.
+- Désactivable : variable Render `REQUIRE_BOT_AND_CHANNEL=false`.
+- Limite : une session déjà ouverte (JWT valable 7 jours) reste utilisable jusqu'à sa fin ; la vérification est refaite à chaque ouverture de la Mini App.

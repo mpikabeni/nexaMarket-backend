@@ -54,9 +54,11 @@ for name in OPTIONAL:
     print(f"[check_env]   {name}: {state}", flush=True)
 
 if problems:
-    print("[check_env] ERREUR - l'API ne peut pas démarrer :", flush=True)
+    print("[check_env] ERREUR - configuration incomplète :", flush=True)
     for line in problems:
         print(f"[check_env]   - {line}", flush=True)
-    sys.exit(1)
+    # On ne quitte PAS : le serveur démarre en mode diagnostic et
+    # /health affiche la cause (voir app/entry.py).
+    print("[check_env] démarrage en mode diagnostic", flush=True)
 
 print("[check_env] configuration OK", flush=True)

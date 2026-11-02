@@ -15,8 +15,8 @@
 
 services:
   - type: web
-    # Le nom du service détermine l'URL publique : le frontend appelle
-    # https://nexamarket-backend.onrender.com (nom aligné ici).
+    # Render ajoute un suffixe si le nom est déjà pris : l'URL réelle de ce
+    # service est https://nexamarket-backend-ffea.onrender.com (celle du frontend).
     name: nexamarket-backend
     runtime: docker
     healthCheckPath: /health
@@ -24,13 +24,13 @@ services:
       - key: APP_NAME
         value: NexMarket API
       - key: APP_VERSION
-        value: 1.0.0
+        value: 1.0.11
       - key: ENVIRONMENT
         value: production
       - key: FRONTEND_URL
         value: https://nexamarketf.netlify.app
       - key: PUBLIC_URL
-        value: https://nexamarket-backend.onrender.com
+        value: https://nexamarket-backend-ffea.onrender.com
       - key: CORS_ORIGINS
         value: https://nexamarketf.netlify.app
 
