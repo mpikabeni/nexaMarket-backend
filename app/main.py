@@ -41,6 +41,8 @@ EXPIRE_INTERVAL_SECONDS = 300
 DEPOSIT_SYNC_INTERVAL_SECONDS = 30
 
 telegram_application = None
+db_ready = False
+db_error = ""
 
 
 # ============================================================
@@ -153,6 +155,33 @@ async def _stop_bot(application) -> None:
 
 
 # ============================================================
+# BASE DE DONNÉES : initialisation tolérante
+# ============================================================
+# Avant, un échec de init_db() au démarrage faisait tomber TOUT le service
+# (redémarrages en boucle, « Not Found » dans la Mini App). Maintenant l'API
+# démarre, réessaie toutes les 10 s, et /health indique l'état.
+
+async def _init_db_with_retry() -> None:
+    global db_ready, db_error
+
+    while True:
+        try:
+            await init_db()
+            db_ready = True
+            db_error = ""
+            logger.info("Base de données prête")
+            return
+
+        except asyncio.CancelledError:
+            raise
+
+        except Exception as exc:
+            db_error = type(exc).__name__
+            logger.exception("Base de données indisponible, nouvel essai dans 10 s")
+            await asyncio.sleep(10)
+
+
+# ============================================================
 # SURVEILLANCE DU BOT
 # ============================================================
 # Le bot démarre EN ARRIÈRE-PLAN (l'API répond tout de suite, même si
@@ -222,9 +251,19 @@ async def _keepalive_loop() -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_db()
+    db_task = asyncio.create_task(_init_db_with_retry())
+
+    try:
+        # On attend un peu pour que les premières requêtes trouvent les
+        # tables, mais sans bloquer le démarrage si la base tarde.
+        await asyncio.wait_for(asyncio.shield(db_task), timeout=8)
+    except asyncio.TimeoutError:
+        logger.warning("Base de données encore en cours d'initialisation")
+    except Exception:
+        pass
 
     tasks = [
+        db_task,
         asyncio.create_task(_bot_supervisor()),
         asyncio.create_task(_maintenance_loop()),
         asyncio.create_task(_deposit_sync_loop()),
@@ -261,6 +300,32 @@ app = FastAPI(
     version=settings.APP_VERSION,
     lifespan=lifespan,
 )
+
+# Garde-fou : un traitement qui dépasse 28 s est interrompu avec une réponse
+# claire (504). Sans cela la Mini App attendait sans savoir si le serveur
+# plantait ou était simplement lent. (Ajouté en premier = le plus interne.)
+@app.middleware("http")
+async def request_timeout(request: Request, call_next):
+    try:
+        return await asyncio.wait_for(call_next(request), timeout=28)
+
+    except asyncio.TimeoutError:
+        logger.error(
+            "Requête trop lente (>28 s) : %s %s",
+            request.method,
+            request.url.path,
+        )
+
+        return JSONResponse(
+            status_code=504,
+            content={
+                "detail": (
+                    "Le serveur a mis trop de temps à traiter la demande "
+                    f"({request.method} {request.url.path}). Réessaie."
+                )
+            },
+        )
+
 
 # Réponses JSON compressées (liste d'annonces, etc.) : plus rapide en 3G/4G.
 app.add_middleware(GZipMiddleware, minimum_size=800)
@@ -335,8 +400,9 @@ async def root():
 @app.get("/health")
 async def health():
     return {
-        "status": "healthy",
+        "status": "healthy" if db_ready else "degraded",
         "service": "NexMarket API",
+        "database": "ok" if db_ready else (db_error or "initialisation"),
         "telegram_bot": (
             "running" if telegram_application is not None else "stopped"
         ),

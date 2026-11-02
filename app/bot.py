@@ -841,18 +841,39 @@ async def my_chat_member_handler(
         new_status,
     )
 
-    # Prévient la personne qui a ajouté le bot (s'il a déjà ouvert le bot).
+    # Prévient la personne qui a ajouté le bot, ET vérifie ses droits.
     if new_status == "administrator" and chat.type == "channel" and actor:
-        try:
-            await context.bot.send_message(
-                chat_id=actor,
-                text=(
-                    f"✅ NexMarket est maintenant administrateur de "
-                    f"« {chat.title} ».\n\n"
-                    "Ouvrez l'application, section Vendre, pour mettre "
-                    "ce canal en vente."
-                ),
+        member = event.new_chat_member
+
+        required = (
+            ("can_manage_chat", "gérer le canal"),
+            ("can_invite_users", "inviter des utilisateurs"),
+        )
+
+        missing = [
+            label
+            for attribute, label in required
+            if not getattr(member, attribute, False)
+        ]
+
+        if missing:
+            text = (
+                f"⚠️ NexMarket est administrateur de « {chat.title} » "
+                "mais il lui manque le droit de : "
+                + ", ".join(missing)
+                + ".\n\nActivez-le (Canal → Administrateurs → NexMarket), "
+                "puis ouvrez l'application → Vendre."
             )
+        else:
+            text = (
+                f"✅ NexMarket est administrateur de « {chat.title} » "
+                "avec tous les droits nécessaires.\n\n"
+                "Ouvrez l'application → Vendre : votre canal apparaît "
+                "dans « Canaux détectés »."
+            )
+
+        try:
+            await context.bot.send_message(chat_id=actor, text=text)
         except Exception:
             pass
 
