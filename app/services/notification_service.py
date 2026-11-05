@@ -303,3 +303,73 @@ class NotificationService:
                 f"Montant : {amount} {currency}"
             ),
         )
+
+
+# ============================================================
+# ADMIN : nouvelle annonce + photos de preuve
+# ============================================================
+
+async def _send_listing_proofs(chat_ids: list[int], text: str, photos: list[bytes]) -> None:
+    from telegram import InputMediaPhoto
+
+    bot = get_telegram_service().bot
+
+    for chat_id in chat_ids:
+        try:
+            if len(photos) == 1:
+                await asyncio.wait_for(
+                    bot.send_photo(chat_id=chat_id, photo=photos[0], caption=text[:1000]),
+                    timeout=30,
+                )
+            else:
+                media = [
+                    InputMediaPhoto(
+                        media=photo,
+                        caption=text[:1000] if index == 0 else None,
+                    )
+                    for index, photo in enumerate(photos)
+                ]
+                await asyncio.wait_for(
+                    bot.send_media_group(chat_id=chat_id, media=media),
+                    timeout=40,
+                )
+        except Exception as exc:
+            logger.warning("Preuves non envoyées à l'admin %s : %s", chat_id, exc)
+
+
+def notify_admins_listing(chat_ids: list[int], text: str, photos: list[bytes]) -> None:
+    """Envoi non bloquant (les photos restent consultables dans la console)."""
+
+    if not chat_ids or not photos:
+        return
+
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _send_listing_proofs(chat_ids, text, photos)
+        )
+    except RuntimeError:
+        return
+
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
+async def admin_chat_ids(db) -> list[int]:
+    """ADMIN_TELEGRAM_ID + tous les comptes administrateurs en base."""
+
+    from app.config import settings
+
+    ids: set[int] = set()
+
+    if settings.ADMIN_TELEGRAM_ID:
+        ids.add(int(settings.ADMIN_TELEGRAM_ID))
+
+    try:
+        rows = await db.execute(
+            select(User.telegram_id).where(User.is_admin.is_(True))
+        )
+        ids.update(int(value) for (value,) in rows.all())
+    except Exception as exc:
+        logger.warning("Liste des admins illisible : %s", exc)
+
+    return sorted(ids)
