@@ -144,3 +144,17 @@ Dockerfile non-root + healthcheck · `render.yaml` : worker supprimé, variables
 - Si Telegram ne permet pas de vérifier (réseau, bot non administrateur du canal) l'accès n'est pas bloqué et l'erreur est écrite dans les logs. Résultat mis en cache 5 min.
 - Désactivable : variable Render `REQUIRE_BOT_AND_CHANNEL=false`.
 - Limite : une session déjà ouverte (JWT valable 7 jours) reste utilisable jusqu'à sa fin ; la vérification est refaite à chaque ouverture de la Mini App.
+
+## Série du 02/11 — dépôt, boutique, preuves, console admin
+
+**Pourquoi le dépôt échouait (capture « HTTP 422 »)** : JessiKaPay **exige le champ `country`** (`body.country : Field required`). Il avait été retiré en supposant que l'API s'en passait. Rétabli : choix du **pays d'origine** (17 pays de l'application JessiKaPay, avec indicatif) et numéro saisi **sans indicatif** ; le backend normalise le numéro (`+242…`, `00242…` ou local → local) et envoie `country` (code ISO) à JessiKaPay. La colonne `deposits.country` est ajoutée automatiquement au démarrage (correctif de schéma idempotent, aucun SQL à lancer). ⚠️ Si JessiKaPay attend le nom du pays plutôt que le code ISO, ce sera visible dans le message d'erreur 422.
+
+**Accueil** : section « NexMarket en chiffres » en bas (ventes réalisées, canaux disponibles, transactions en cours, membres, volume échangé) alimentée par `GET /api/stats/public` (cache 30 s, aucune donnée personnelle) ; compteurs animés au défilement, bordures lumineuses, reflets, orbes flottantes, bandeau défilant, pastille « EN DIRECT » (animations désactivées si l'utilisateur les a réduites).
+
+**Portefeuille / profil** : bouton **Copier** le Nexa ID ; **œil** pour masquer le solde (mémorisé).
+
+**Vente d'un canal** : canal **public** (@username) ou **privé** (ID du canal, ou sélection dans « Canaux détectés ») ; **1 à 4 photos de preuve obligatoires**, compressées dans la Mini App (~700 Ko max), conservées en base (`listing_proofs`) et envoyées à l'administrateur par le bot. Annonce publique : bouton **« Voir le canal sur Telegram »** ; canal privé : note « accès donné après l'achat ».
+
+**Console admin** (nouveau `admin/index.html` + `panel.css` + `panel.js`, structure de la maquette) : vue d'ensemble, vérifications (photos de preuve, approuver / refuser), transactions (assigner, transfert, rembourser, payer), **canaux (supprimer)**, **utilisateurs (bloquer / débloquer / retirer de la marketplace)**, signalements, messages, **envoi d'une annonce à tous (via le bot) avec test**, retraits à vérifier, administrateurs, portefeuille. Nouvelles routes : `DELETE /admin/channels/{id}`, `POST /admin/users/{id}/remove`, `POST /admin/announcements`, `GET /admin/admins`, `GET /admin/proofs/{id}`. Un canal supprimé ne peut plus être remis en vente. Approuver une annonce sans preuve demande une confirmation.
+
+**Limites** : tout est vérifié statiquement (syntaxe, imports, cycles, 0 écart frontend ↔ routes) mais **rien n'a été exécuté** ; « retirer un utilisateur » bloque le compte et retire ses annonces/canaux sans effacer l'historique financier (volontaire, traçabilité).
