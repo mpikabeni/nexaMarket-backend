@@ -11,4 +11,5 @@ from app.models.platform import PlatformWallet, PlatformLedger
 from app.models.withdrawal import Withdrawal
 from app.models.deposit import Deposit
 from app.models.bot_chat import BotChat
-__all__=["User","Wallet","WalletOperation","Channel","Listing","Transaction","Message","Report","Review","Favorite","PlatformWallet","PlatformLedger","Withdrawal","Deposit","BotChat"]
+from app.models.listing_proof import ListingProof
+__all__=["User","Wallet","WalletOperation","Channel","Listing","Transaction","Message","Report","Review","Favorite","PlatformWallet","PlatformLedger","Withdrawal","Deposit","BotChat","ListingProof"]

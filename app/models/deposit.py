@@ -12,6 +12,7 @@ class Deposit(Base):
     amount: Mapped[Decimal] = mapped_column(Numeric(18,2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="XAF", nullable=False)
     phone: Mapped[str] = mapped_column(String(40), nullable=False)
+    country: Mapped[str | None] = mapped_column(String(10), nullable=True)
     jessikapay_request_id: Mapped[str] = mapped_column(String(255), unique=True, index=True)
     jessikapay_code: Mapped[str | None] = mapped_column(String(255))
     payment_link: Mapped[str | None] = mapped_column(Text)

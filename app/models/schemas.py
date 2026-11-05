@@ -170,6 +170,12 @@ class ListingCreate(BaseModel):
         max_length=100,
     )
 
+    # Photos de preuve (data URL ou base64), 1 à 4 images.
+    proof_images: list[str] = Field(
+        default_factory=list,
+        max_length=4,
+    )
+
 
 class ListingUpdate(BaseModel):
     price: Decimal | None = Field(
@@ -313,6 +319,12 @@ class ReportResolveRequest(BaseModel):
 class WithdrawalResolveRequest(BaseModel):
     action: Literal["complete", "fail"]
     note: str | None = Field(default=None, max_length=1000)
+
+
+class AnnouncementRequest(BaseModel):
+    text: str = Field(..., min_length=3, max_length=3500)
+    # all = tous les utilisateurs ; me = test envoyé à l'administrateur seul
+    audience: Literal["all", "me"] = "all"
 
 
 class RejectRequest(BaseModel):
