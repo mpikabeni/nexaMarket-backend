@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -155,6 +156,29 @@ async def init_db() -> None:
         await connection.run_sync(
             Base.metadata.create_all
         )
+
+    await apply_schema_patches()
+
+
+# create_all() ne MODIFIE jamais une table existante. Ces correctifs,
+# idempotents, ajoutent les colonnes introduites après la création de la
+# base (aucun SQL à lancer à la main).
+SCHEMA_PATCHES = [
+    "ALTER TABLE deposits ADD COLUMN IF NOT EXISTS country VARCHAR(10)",
+]
+
+
+async def apply_schema_patches() -> None:
+    from sqlalchemy import text
+
+    for statement in SCHEMA_PATCHES:
+        try:
+            async with engine.begin() as connection:
+                await connection.execute(text(statement))
+        except Exception as exc:  # une base sans la table : ignoré
+            logging.getLogger("nexmarket.db").warning(
+                "Correctif de schéma ignoré (%s) : %s", statement, exc
+            )
 
 
 # =========================================================
