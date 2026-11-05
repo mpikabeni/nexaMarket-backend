@@ -10,6 +10,7 @@ from app.db import get_db
 from app.deps import get_current_user
 from app.models.deposit import Deposit
 from app.models.user import User
+from app.services.countries import COUNTRIES, is_supported, local_phone
 from app.services.deposit_sync import sync_deposit
 from app.services.jessikapay import JessiKaPayError, jessikapay_service
 
@@ -25,6 +26,8 @@ class DepositIn(BaseModel):
     # Numéro au format international (ex. +242060000000) : le pays est
     # déduit du numéro par JessiKaPay, il n'est plus demandé à l'utilisateur.
     phone: str = Field(..., min_length=6, max_length=40)
+    # JessiKaPay EXIGE ce champ (HTTP 422 sinon).
+    country: str = Field(..., min_length=2, max_length=2)
 
 
 @router.post("")
@@ -37,7 +40,18 @@ async def create_deposit(
         raise HTTPException(400, "Le montant doit être un nombre entier (XAF).")
 
     amount = int(payload.amount)
-    phone = payload.phone.strip()
+    country = payload.country.strip().upper()
+
+    if not is_supported(country):
+        raise HTTPException(400, "Pays non pris en charge pour le dépôt.")
+
+    phone = local_phone(country, payload.phone)
+
+    if not 6 <= len(phone) <= 15:
+        raise HTTPException(
+            400,
+            "Numéro invalide : entre ton numéro Mobile Money (sans l'indicatif).",
+        )
     reference = "DEP-" + uuid4().hex[:20].upper()
 
     try:
@@ -45,6 +59,7 @@ async def create_deposit(
             {
                 "telegram_id": str(user.telegram_id),
                 "name": user.first_name or user.username or "NexMarket",
+                "country": country,
                 "phone": phone,
                 "amount": amount,
                 "reference": reference,
@@ -64,6 +79,7 @@ async def create_deposit(
         amount=amount,
         currency="XAF",
         phone=phone,
+        country=country,
         jessikapay_request_id=str(request_id),
         jessikapay_code=provider.get("code"),
         payment_link=provider.get("payment_link"),
@@ -137,3 +153,15 @@ async def check_deposit(
     status = await sync_deposit(db, deposit_id)
 
     return {"id": deposit_id, "status": status, "paid": status == "paid"}
+
+
+@router.get("/countries")
+async def deposit_countries():
+    """Pays disponibles pour un dépôt (nom, code ISO, indicatif)."""
+
+    return {
+        "countries": [
+            {"code": code, "name": name, "dial": f"+{dial}"}
+            for code, name, dial in COUNTRIES
+        ]
+    }

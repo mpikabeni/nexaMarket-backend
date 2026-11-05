@@ -252,6 +252,16 @@ async def submit_channel(
                 ),
             )
 
+        # Canal supprimé par l'administration : définitivement refusé.
+        if existing_channel.verification_status == "removed":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=(
+                    "Ce canal a été retiré de NexMarket par "
+                    "l'administration."
+                ),
+            )
+
         # Une ancienne chaîne rejetée peut être resoumise.
         existing_channel.telegram_username = (
             verification.username

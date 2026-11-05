@@ -8,6 +8,7 @@ from app.routes import (
     messages,
     reports,
     reviews,
+    stats,
     transactions,
     users,
     wallet,
@@ -16,6 +17,6 @@ from app.routes import (
 
 __all__ = [
     "admin", "auth", "channels", "deposits", "favorites", "listings",
-    "messages", "reports", "reviews", "transactions", "users", "wallet",
+    "messages", "reports", "reviews", "stats", "transactions", "users", "wallet",
     "withdrawals",
 ]

@@ -21,10 +21,13 @@ from app.config import settings
 from app.deps import CurrentUser, DBSession
 from app.models.channel import Channel
 from app.models.listing import Listing
+from app.models.listing_proof import ListingProof
 from app.models.review import Review
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.services.media import channel_photo_url
+from app.services.notification_service import admin_chat_ids, notify_admins_listing
+from app.services.proofs import decode_proofs
 from app.models.schemas import ListingCreate, ListingUpdate
 
 
@@ -83,6 +86,13 @@ def listing_to_dict(
                 "id": channel.id,
                 "title": channel.title,
                 "telegram_username": channel.telegram_username,
+                # Canal PRIVÉ = pas de @username : pas de lien public.
+                "is_private": not bool(channel.telegram_username),
+                "channel_url": (
+                    f"https://t.me/{channel.telegram_username}"
+                    if channel.telegram_username
+                    else None
+                ),
                 # alias conservés pour le frontend existant
                 "username": channel.telegram_username,
                 "description": channel.description,
@@ -432,6 +442,12 @@ async def create_listing(
             "Ce canal possède déjà une annonce active.",
         )
 
+    # Photos de preuve : obligatoires, envoyées à l'administrateur.
+    try:
+        proofs = decode_proofs(payload.proof_images)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
     listing = Listing(
         channel_id=channel.id,
         seller_id=current_user.id,
@@ -447,8 +463,38 @@ async def create_listing(
     )
 
     db.add(listing)
+    await db.flush()
+
+    for content_type, data in proofs:
+        db.add(
+            ListingProof(
+                listing_id=listing.id,
+                content_type=content_type,
+                data=data,
+            )
+        )
+
     await db.commit()
     await db.refresh(listing)
+
+    # Prévenir les administrateurs, photos de preuve jointes.
+    notify_admins_listing(
+        await admin_chat_ids(db),
+        (
+            "🆕 Nouvelle annonce à valider\n\n"
+            f"Canal : {listing.title}\n"
+            + (
+                f"Lien : https://t.me/{channel.telegram_username}\n"
+                if channel.telegram_username
+                else f"Canal PRIVÉ (ID {channel.telegram_channel_id})\n"
+            )
+            + f"Abonnés : {channel.subscriber_count or 0}\n"
+            f"Prix : {listing.price} {listing.currency}\n"
+            f"Vendeur : {current_user.first_name or current_user.username or current_user.nexa_id}"
+            f" ({current_user.nexa_id})"
+        ),
+        [data for _, data in proofs],
+    )
 
     return {
         "status": "success",

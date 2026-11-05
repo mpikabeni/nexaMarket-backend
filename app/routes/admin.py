@@ -1,8 +1,10 @@
+import asyncio
 from datetime import datetime, timezone
 import hmac
 import time
 
 from fastapi import (
+    Response,
     APIRouter,
     Header,
     HTTPException,
@@ -10,7 +12,7 @@ from fastapi import (
     status,
 )
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from app.auth import (
     create_access_token,
@@ -23,7 +25,13 @@ from app.models.listing import Listing
 from app.services.notification_service import notify_user_id
 from app.models.message import Message
 from app.models.platform import PlatformWallet
-from app.models.schemas import RejectRequest, WithdrawalResolveRequest
+from app.models.listing_proof import ListingProof
+from app.models.schemas import (
+    AnnouncementRequest,
+    RejectRequest,
+    WithdrawalResolveRequest,
+)
+from app.services.telegram_service import get_telegram_service
 from app.models.withdrawal import Withdrawal
 from app.services.payout_settlement import complete_withdrawal, fail_withdrawal
 from app.models.report import Report
@@ -694,20 +702,31 @@ async def pending_listings(
     db: DBSession,
 ):
     """
-    Liste les annonces en attente de modération.
+    Liste les annonces en attente de modération, avec le canal, le vendeur
+    et le nombre de photos de preuve (pour décider sans ouvrir chaque fiche).
     """
 
-    result = await db.execute(
-        select(Listing)
-        .where(
-            Listing.status == "pending_review"
+    rows = (
+        await db.execute(
+            select(Listing, Channel, User)
+            .join(Channel, Channel.id == Listing.channel_id)
+            .join(User, User.id == Listing.seller_id)
+            .where(Listing.status == "pending_review")
+            .order_by(Listing.created_at.asc())
         )
-        .order_by(
-            Listing.created_at.asc()
-        )
-    )
+    ).all()
 
-    listings = result.scalars().all()
+    proof_counts = dict(
+        (
+            await db.execute(
+                select(ListingProof.listing_id, func.count())
+                .where(
+                    ListingProof.listing_id.in_([row[0].id for row in rows])
+                )
+                .group_by(ListingProof.listing_id)
+            )
+        ).all()
+    ) if rows else {}
 
     return {
         "listings": [
@@ -720,14 +739,32 @@ async def pending_listings(
                 "description": listing.description,
                 "category": listing.category,
                 "status": listing.status,
-                "platform_fee_rate": (
-                    listing.platform_fee_rate
-                ),
+                "platform_fee_rate": listing.platform_fee_rate,
                 "created_at": listing.created_at,
+                "proofs_count": proof_counts.get(listing.id, 0),
+                "channel": {
+                    "title": channel.title,
+                    "telegram_username": channel.telegram_username,
+                    "is_private": not bool(channel.telegram_username),
+                    "subscriber_count": channel.subscriber_count,
+                },
+                "seller": {
+                    "id": seller.id,
+                    "name": (
+                        " ".join(
+                            part
+                            for part in (seller.first_name, seller.last_name)
+                            if part
+                        )
+                        or seller.username
+                        or seller.nexa_id
+                    ),
+                    "nexa_id": seller.nexa_id,
+                },
             }
-            for listing in listings
+            for listing, channel, seller in rows
         ],
-        "count": len(listings),
+        "count": len(rows),
     }
 
 
@@ -740,6 +777,7 @@ async def approve_listing(
     listing_id: int,
     current_admin: CurrentAdmin,
     db: DBSession,
+    without_proofs: bool = False,
 ):
     """
     Approuve et publie une annonce.
@@ -757,6 +795,23 @@ async def approve_listing(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Annonce introuvable.",
+        )
+
+    # Les photos de preuve (envoyées par le vendeur) doivent exister.
+    proofs_count = await db.scalar(
+        select(func.count())
+        .select_from(ListingProof)
+        .where(ListingProof.listing_id == listing_id)
+    )
+
+    if not proofs_count and not without_proofs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Aucune photo de preuve n'a été fournie pour cette annonce. "
+                "Demandez-les au vendeur, ou approuvez quand même en "
+                "confirmant."
+            ),
         )
 
     channel_result = await db.execute(
@@ -1180,6 +1235,8 @@ async def list_all_channels(
                 "owner_verified": c.owner_verified,
                 "verification_status": c.verification_status,
                 "is_active": c.is_active,
+                "is_private": not bool(c.telegram_username),
+                "telegram_channel_id": c.telegram_channel_id,
                 "is_listed": c.is_listed,
                 "owner_id": c.owner_id,
                 "created_at": c.created_at,
@@ -1215,6 +1272,14 @@ async def get_listing_detail(
 
     listing, channel = row
 
+    proof_ids = (
+        await db.execute(
+            select(ListingProof.id)
+            .where(ListingProof.listing_id == listing_id)
+            .order_by(ListingProof.id)
+        )
+    ).scalars().all()
+
     return {
         "id": listing.id,
         "title": listing.title,
@@ -1227,6 +1292,7 @@ async def get_listing_detail(
         "rejection_reason": listing.rejection_reason,
         "seller_id": listing.seller_id,
         "created_at": listing.created_at,
+        "proofs": [{"id": proof_id} for proof_id in proof_ids],
         "channel": {
             "id": channel.id,
             "title": channel.title,
@@ -1391,3 +1457,319 @@ async def resolve_withdrawal(
         )
 
     return {"id": withdrawal.id, "status": withdrawal.status}
+
+
+# ============================================================
+# PHOTOS DE PREUVE (consultation par l'administrateur)
+# ============================================================
+
+@router.get("/proofs/{proof_id}")
+async def get_proof_image(
+    proof_id: int,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    proof = (
+        await db.execute(
+            select(ListingProof).where(ListingProof.id == proof_id)
+        )
+    ).scalar_one_or_none()
+
+    if proof is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Photo introuvable.",
+        )
+
+    return Response(
+        content=proof.data,
+        media_type=proof.content_type,
+        headers={"Cache-Control": "private, max-age=3600"},
+    )
+
+
+# ============================================================
+# SUPPRIMER UN CANAL
+# ============================================================
+
+ACTIVE_TRANSACTION_STATUSES = (
+    "pending_payment",
+    "waiting_admin",
+    "transfer_started",
+    "protection_period",
+    "disputed",
+)
+
+
+@router.delete("/channels/{channel_id}")
+async def remove_channel(
+    channel_id: int,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """
+    Retire définitivement un canal de NexMarket : ses annonces sont
+    annulées, il n'est plus visible et ne peut plus être remis en vente.
+    L'historique des transactions terminées est conservé.
+    """
+
+    channel = (
+        await db.execute(
+            select(Channel)
+            .where(Channel.id == channel_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if channel is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Canal introuvable.",
+        )
+
+    active = await db.scalar(
+        select(func.count())
+        .select_from(Transaction)
+        .join(Listing, Listing.id == Transaction.listing_id)
+        .where(
+            Listing.channel_id == channel.id,
+            Transaction.status.in_(ACTIVE_TRANSACTION_STATUSES),
+        )
+    )
+
+    if active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Des transactions sont en cours sur ce canal : "
+                "résolvez-les avant de le supprimer."
+            ),
+        )
+
+    listings = (
+        await db.execute(
+            select(Listing).where(Listing.channel_id == channel.id)
+        )
+    ).scalars().all()
+
+    cancelled = 0
+
+    for listing in listings:
+        if listing.status not in ("sold", "cancelled"):
+            listing.status = "cancelled"
+            cancelled += 1
+
+        listing.is_public = False
+
+    channel.is_active = False
+    channel.is_listed = False
+    channel.verification_status = "removed"
+
+    title = channel.title
+    owner_id = channel.owner_id
+
+    await db.commit()
+
+    await notify_user_id(
+        db,
+        owner_id,
+        f"⛔ Votre canal « {title} » a été retiré de NexMarket par "
+        "l'administration.",
+    )
+
+    return {
+        "status": "success",
+        "channel_id": channel_id,
+        "listings_cancelled": cancelled,
+    }
+
+
+# ============================================================
+# RETIRER UN UTILISATEUR DE LA MARKETPLACE
+# ============================================================
+
+@router.post("/users/{user_id}/remove")
+async def remove_user(
+    user_id: int,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """
+    Bloque le compte ET retire ses annonces et ses canaux de la
+    marketplace. Les comptes ne sont jamais effacés de la base : l'historique
+    financier (dépôts, retraits, transactions) doit rester traçable.
+    """
+
+    user = (
+        await db.execute(select(User).where(User.id == user_id))
+    ).scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Utilisateur introuvable.",
+        )
+
+    if user.id == current_admin.id or user.is_admin:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Un administrateur ne peut pas être retiré.",
+        )
+
+    active = await db.scalar(
+        select(func.count())
+        .select_from(Transaction)
+        .where(
+            or_(
+                Transaction.buyer_id == user.id,
+                Transaction.seller_id == user.id,
+            ),
+            Transaction.status.in_(ACTIVE_TRANSACTION_STATUSES),
+        )
+    )
+
+    if active:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Cet utilisateur a des transactions en cours : "
+                "résolvez-les d'abord."
+            ),
+        )
+
+    listings = (
+        await db.execute(
+            select(Listing).where(
+                Listing.seller_id == user.id,
+                Listing.status.notin_(("sold", "cancelled")),
+            )
+        )
+    ).scalars().all()
+
+    for listing in listings:
+        listing.status = "cancelled"
+        listing.is_public = False
+
+    channels = (
+        await db.execute(
+            select(Channel).where(Channel.owner_id == user.id)
+        )
+    ).scalars().all()
+
+    for channel in channels:
+        channel.is_active = False
+        channel.is_listed = False
+
+    user.is_active = False
+
+    await db.commit()
+
+    return {
+        "status": "success",
+        "user_id": user.id,
+        "listings_cancelled": len(listings),
+        "channels_removed": len(channels),
+    }
+
+
+# ============================================================
+# ANNONCE À TOUS LES UTILISATEURS (via le bot)
+# ============================================================
+
+async def _broadcast(admin_chat_id: int, chat_ids: list[int], text: str) -> None:
+    bot = get_telegram_service().bot
+    sent = failed = 0
+
+    for chat_id in chat_ids:
+        try:
+            await bot.send_message(chat_id=chat_id, text=text)
+            sent += 1
+        except Exception:
+            # utilisateur qui a bloqué le bot / jamais démarré le bot
+            failed += 1
+
+        await asyncio.sleep(0.06)  # ~16 messages/s : sous la limite Telegram
+
+    try:
+        await bot.send_message(
+            chat_id=admin_chat_id,
+            text=f"📢 Annonce terminée : {sent} envoyé(s), {failed} non distribué(s).",
+        )
+    except Exception:
+        pass
+
+
+_broadcast_tasks: set = set()
+
+
+@router.post("/announcements")
+async def send_announcement(
+    payload: AnnouncementRequest,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    if payload.audience == "me":
+        chat_ids = [current_admin.telegram_id]
+    else:
+        chat_ids = [
+            int(value)
+            for (value,) in (
+                await db.execute(
+                    select(User.telegram_id).where(User.is_active.is_(True))
+                )
+            ).all()
+        ]
+
+    task = asyncio.get_running_loop().create_task(
+        _broadcast(
+            current_admin.telegram_id,
+            chat_ids,
+            "📢 NexMarket\n\n" + payload.text.strip(),
+        )
+    )
+    _broadcast_tasks.add(task)
+    task.add_done_callback(_broadcast_tasks.discard)
+
+    return {"status": "queued", "recipients": len(chat_ids)}
+
+
+# ============================================================
+# ADMINISTRATEURS
+# ============================================================
+
+@router.get("/admins")
+async def list_admins(
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    rows = (
+        await db.execute(
+            select(User)
+            .where(
+                or_(
+                    User.is_admin.is_(True),
+                    User.telegram_id == int(settings.ADMIN_TELEGRAM_ID or 0),
+                )
+            )
+            .order_by(User.created_at)
+        )
+    ).scalars().all()
+
+    return {
+        "admins": [
+            {
+                "id": user.id,
+                "telegram_id": user.telegram_id,
+                "nexa_id": user.nexa_id,
+                "name": " ".join(
+                    part for part in (user.first_name, user.last_name) if part
+                ) or user.username,
+                "username": user.username,
+                "is_primary": bool(
+                    settings.ADMIN_TELEGRAM_ID
+                    and user.telegram_id == int(settings.ADMIN_TELEGRAM_ID)
+                ),
+            }
+            for user in rows
+        ]
+    }
