@@ -33,6 +33,9 @@ from app.models.schemas import (
 )
 from app.services.telegram_service import get_telegram_service
 from app.models.withdrawal import Withdrawal
+from app.models.deposit import Deposit
+from app.services.deposit_sync import credit_deposit_manually, sync_deposit
+from app.services.jessikapay import JessiKaPayError, jessikapay_service
 from app.services.payout_settlement import complete_withdrawal, fail_withdrawal
 from app.models.report import Report
 from app.models.transaction import Transaction
@@ -1457,6 +1460,108 @@ async def resolve_withdrawal(
         )
 
     return {"id": withdrawal.id, "status": withdrawal.status}
+
+
+# ============================================================
+# DÉPÔTS (diagnostic + crédit manuel)
+# ============================================================
+
+@router.get("/deposits")
+async def list_deposits(
+    current_admin: CurrentAdmin,
+    db: DBSession,
+    status_filter: str = "",
+    limit: int = 100,
+):
+    """Derniers dépôts (tous les statuts par défaut)."""
+
+    limit = max(1, min(limit, 200))
+
+    query = (
+        select(Deposit, User)
+        .join(User, User.id == Deposit.user_id)
+        .order_by(Deposit.created_at.desc())
+        .limit(limit)
+    )
+
+    if status_filter:
+        query = query.where(Deposit.status == status_filter)
+
+    rows = (await db.execute(query)).all()
+
+    return {
+        "deposits": [
+            {
+                "id": d.id,
+                "reference": d.reference,
+                "user": (u.username and f"@{u.username}") or u.first_name or f"#{u.id}",
+                "nexa_id": u.nexa_id,
+                "amount": d.amount,
+                "currency": d.currency,
+                "country": d.country,
+                "phone": d.phone,
+                "status": d.status,
+                "failure_reason": d.failure_reason,
+                "created_at": d.created_at,
+                "paid_at": d.paid_at,
+            }
+            for d, u in rows
+        ]
+    }
+
+
+@router.post("/deposits/{deposit_id}/recheck")
+async def recheck_deposit(
+    deposit_id: int,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """
+    Interroge JessiKaPay à nouveau (même pour un dépôt classé en échec)
+    et renvoie la RÉPONSE BRUTE du prestataire pour comprendre le blocage.
+    """
+
+    deposit = (
+        await db.execute(select(Deposit).where(Deposit.id == deposit_id))
+    ).scalar_one_or_none()
+
+    if deposit is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dépôt introuvable.")
+
+    try:
+        provider = await jessikapay_service.get_deposit(deposit.jessikapay_request_id)
+    except JessiKaPayError as exc:
+        provider = {"error": str(exc)}
+
+    new_status = await sync_deposit(db, deposit_id, force=True)
+
+    return {"id": deposit_id, "status": new_status, "paid": new_status == "paid", "provider": provider}
+
+
+class DepositCreditRequest(BaseModel):
+    note: str = ""
+
+
+@router.post("/deposits/{deposit_id}/credit")
+async def credit_deposit(
+    deposit_id: int,
+    payload: DepositCreditRequest,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """
+    Crédite le wallet de l'utilisateur APRÈS avoir vérifié dans
+    JessiKaPay que le paiement a bien été reçu. Sans double crédit.
+    """
+
+    result = await credit_deposit_manually(
+        db, deposit_id, current_admin.id, (payload.note or "").strip()[:200]
+    )
+
+    if result == "unknown":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Dépôt introuvable.")
+
+    return {"id": deposit_id, "status": result, "paid": result == "paid"}
 
 
 # ============================================================
