@@ -26,9 +26,36 @@ from app.services.wallet_service import (
 
 logger = logging.getLogger("nexmarket.deposits")
 
-PAID_STATUSES = {"paid", "completed", "success", "successful"}
-FAILED_STATUSES = {"failed", "expired", "cancelled", "canceled", "rejected"}
+PAID_STATUSES = {
+    "paid", "completed", "complete", "success", "successful", "succeeded",
+    "confirmed", "approved", "validated", "done", "captured", "settled",
+}
+FAILED_STATUSES = {"failed", "failure", "expired", "cancelled", "canceled", "rejected", "declined", "refused"}
 FINAL_STATUSES = {"paid", "failed", "expired", "cancelled", "rejected", "amount_mismatch"}
+
+
+# Statuts « en cours » normaux : inutile de les journaliser à chaque passage.
+WAITING_STATUSES = {"", "pending", "waiting", "created", "processing", "initiated", "in_progress", "awaiting_payment", "unpaid"}
+
+
+def _unwrap(response: dict) -> dict:
+    """Certaines API enveloppent la réponse dans « data »."""
+
+    inner = response.get("data")
+
+    if isinstance(inner, dict) and ("status" in inner or "state" in inner):
+        return {**response, **inner}
+
+    return response
+
+
+def _provider_status(response: dict) -> str:
+    for key in ("status", "state", "payment_status", "request_status"):
+        value = response.get(key)
+        if value:
+            return str(value).strip().lower()
+
+    return ""
 
 
 def _money(value) -> Decimal | None:
@@ -38,7 +65,7 @@ def _money(value) -> Decimal | None:
         return None
 
 
-async def sync_deposit(db: AsyncSession, deposit_id: int) -> str:
+async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False) -> str:
     """
     Interroge JessiKaPay et crédite le wallet si le dépôt est payé.
     Renvoie le statut du dépôt après vérification. Idempotent.
@@ -53,7 +80,12 @@ async def sync_deposit(db: AsyncSession, deposit_id: int) -> str:
     if deposit is None:
         return "unknown"
 
-    if deposit.status in FINAL_STATUSES:
+    if deposit.status == "paid":
+        return "paid"
+
+    # force=True (admin) : on revérifie aussi un dépôt classé en échec,
+    # expiré ou « montant incohérent ».
+    if deposit.status in FINAL_STATUSES and not force:
         return deposit.status
 
     try:
@@ -68,7 +100,15 @@ async def sync_deposit(db: AsyncSession, deposit_id: int) -> str:
     if not isinstance(response, dict):
         return deposit.status
 
-    provider_status = str(response.get("status") or "").lower()
+    response = _unwrap(response)
+    provider_status = _provider_status(response)
+
+    if provider_status not in PAID_STATUSES and provider_status not in FAILED_STATUSES \
+            and provider_status not in WAITING_STATUSES:
+        logger.warning(
+            "Dépôt %s : statut JessiKaPay non reconnu %r — réponse brute : %s",
+            deposit.reference, provider_status, response,
+        )
 
     # ---------------------------------------------------------
     # Échec / expiration
@@ -105,8 +145,10 @@ async def sync_deposit(db: AsyncSession, deposit_id: int) -> str:
     expected = _money(deposit.amount)
     reported = _money(response.get("amount")) if response.get("amount") is not None else None
 
-    # On ne crédite jamais un montant différent de celui demandé.
-    if reported is not None and reported != expected:
+    # On ne crédite jamais MOINS que le montant demandé. Un montant
+    # supérieur (frais ajoutés par l'opérateur) est accepté : on crédite
+    # exactement le montant demandé.
+    if reported is not None and expected is not None and reported < expected:
         deposit.status = "amount_mismatch"
         deposit.failure_reason = (
             f"Montant incohérent : attendu {expected}, reçu {reported}."
@@ -131,6 +173,7 @@ async def sync_deposit(db: AsyncSession, deposit_id: int) -> str:
         return deposit.status
 
     deposit.status = "paid"
+    deposit.failure_reason = None
     deposit.paid_at = datetime.utcnow()
     await db.commit()
 
@@ -166,3 +209,41 @@ async def sync_pending_deposits(session_factory, *, max_age_hours: int = 48, lim
             logger.exception("Dépôt %s : erreur de synchronisation", deposit_id)
 
     return paid
+
+
+async def credit_deposit_manually(db: AsyncSession, deposit_id: int, admin_id: int, note: str = "") -> str:
+    """
+    Crédite un dépôt après vérification MANUELLE dans JessiKaPay.
+    Idempotent : la référence du dépôt empêche tout double crédit.
+    """
+
+    deposit = (
+        await db.execute(
+            select(Deposit).where(Deposit.id == deposit_id).with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if deposit is None:
+        return "unknown"
+
+    if deposit.status == "paid":
+        return "paid"
+
+    try:
+        await WalletService(db).credit(
+            user_id=deposit.user_id,
+            amount=_money(deposit.amount),
+            reference=deposit.reference,
+            operation_type="deposit",
+            provider_reference=deposit.jessikapay_request_id,
+            description="Dépôt crédité manuellement par un administrateur",
+        )
+    except DuplicateOperationError:
+        pass
+
+    deposit.status = "paid"
+    deposit.paid_at = datetime.utcnow()
+    deposit.failure_reason = f"Crédité manuellement (admin #{admin_id})" + (f" : {note}" if note else "")
+    await db.commit()
+
+    return "paid"
