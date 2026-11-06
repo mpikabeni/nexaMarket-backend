@@ -28,6 +28,7 @@ from app.routes import (
     wallet,
     withdrawals,
 )
+from app.services.commission_service import settle_pending_commissions
 from app.services.deposit_sync import sync_pending_deposits
 from app.services.jessikapay import JessiKaPayError
 from app.services.transaction_service import (
@@ -99,6 +100,26 @@ async def _deposit_sync_loop() -> None:
             logger.exception("Échec de la vérification des dépôts")
 
         await asyncio.sleep(DEPOSIT_SYNC_INTERVAL_SECONDS)
+
+
+# ============================================================
+# VERSEMENT DES COMMISSIONS vers le compte JessiKaPay NexMarket
+# ============================================================
+
+async def _commission_loop() -> None:
+    while True:
+        try:
+            sent = await settle_pending_commissions(AsyncSessionLocal)
+
+            if sent:
+                logger.info("%s commission(s) versée(s)", sent)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Échec du versement des commissions")
+
+        await asyncio.sleep(20)
 
 
 # ============================================================
@@ -268,6 +289,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_bot_supervisor()),
         asyncio.create_task(_maintenance_loop()),
         asyncio.create_task(_deposit_sync_loop()),
+        asyncio.create_task(_commission_loop()),
         asyncio.create_task(_keepalive_loop()),
     ]
 
