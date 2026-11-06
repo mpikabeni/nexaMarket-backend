@@ -33,3 +33,22 @@
   services/transaction_service.py, bot.py, services/notification_service.py.
 
 Aucune migration SQL nécessaire.
+
+---
+
+# v19 — argent réel : plus aucun crédit sans JessiKaPay + commissions versées
+
+- **Crédit manuel supprimé** : `POST /admin/deposits/{id}/credit` ne crédite
+  plus rien lui-même, il force seulement une revérification auprès de
+  JessiKaPay. Le wallet n'est crédité que si JessiKaPay confirme le paiement
+  (montant jamais inférieur au montant demandé). Bouton « Créditer » retiré
+  de la console.
+- **Commissions** : à la fin de chaque transaction, un ordre de versement
+  (table `commission_payouts`, un seul par transaction) est créé dans le même
+  commit que la vente. Une tâche de fond (20 s) verse la commission sur
+  `NEXA_JP_NUMBER` via un payout JessiKaPay. Le bot prévient les admins à
+  chaque versement ; timeout/refus -> alerte + `GET /admin/commissions` et
+  `POST /admin/commissions/{id}/resolve` (sent | retry).
+- Sécurité : statut « sending » enregistré avant l'appel, aucun renvoi
+  automatique après timeout, 5 essais max après refus explicite.
+- Nouveaux fichiers : services/commission_service.py, MIGRATION_v19.sql.
