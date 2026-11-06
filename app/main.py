@@ -39,7 +39,7 @@ from app.services.wallet_service import WalletServiceError
 logger = logging.getLogger("nexmarket")
 
 EXPIRE_INTERVAL_SECONDS = 300
-DEPOSIT_SYNC_INTERVAL_SECONDS = 30
+DEPOSIT_SYNC_INTERVAL_SECONDS = 15
 
 telegram_application = None
 db_ready = False

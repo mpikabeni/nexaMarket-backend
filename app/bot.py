@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from decimal import Decimal
@@ -33,6 +34,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.db import AsyncSessionLocal
 from app.models import BotChat, Channel, Listing, Transaction, User, Wallet
+from app.services.chat_service import ROLE_LABELS, post_message, role_for
 from app.services.telegram_service import TelegramService
 
 
@@ -1474,6 +1476,163 @@ async def broadcast_message_handler(
     )
 
 
+
+# ============================================================
+# DISCUSSION D'UNE TRANSACTION (acheteur / vendeur / admin)
+# ============================================================
+# Les messages écrits dans la Mini App ou la console admin arrivent ici
+# via le bot. Le bouton « Répondre » (ou une réponse Telegram directe au
+# message) renvoie le texte dans la même discussion.
+
+CHAT_TAG = re.compile(r"Discussion #(\d+)")
+
+
+async def _load_chat_context(telegram_id: int, transaction_id: int):
+    """Retourne (user, transaction, erreur)."""
+
+    async with AsyncSessionLocal() as db:
+        user = (
+            await db.execute(
+                select(User).where(User.telegram_id == telegram_id)
+            )
+        ).scalar_one_or_none()
+
+        if user is None:
+            return None, None, (
+                "Ouvre d'abord la Mini App (ou la console admin) une fois "
+                "pour activer ton compte, puis réessaie."
+            )
+
+        if not user.is_active:
+            return None, None, "⛔ Ton compte est désactivé."
+
+        transaction = (
+            await db.execute(
+                select(Transaction).where(Transaction.id == transaction_id)
+            )
+        ).scalar_one_or_none()
+
+        if transaction is None or role_for(transaction, user) is None:
+            return None, None, "❌ Discussion introuvable."
+
+        return user, transaction, None
+
+
+async def stop_command(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
+    if not update.message:
+        return
+
+    had_chat = context.user_data.pop("chat_tx", None)
+
+    await update.message.reply_text(
+        "✅ Discussion quittée. Utilise « Répondre » sous un message "
+        "pour la rouvrir."
+        if had_chat
+        else "ℹ️ Aucune discussion ouverte."
+    )
+
+
+async def open_chat_callback(query, context) -> None:
+
+    try:
+        transaction_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+
+    user, transaction, error = await _load_chat_context(
+        query.from_user.id,
+        transaction_id,
+    )
+
+    if error:
+        await query.message.reply_text(error)
+        return
+
+    context.user_data["chat_tx"] = transaction.id
+
+    role = ROLE_LABELS.get(role_for(transaction, user), "")
+
+    await query.message.reply_text(
+        f"✍️ Discussion #{transaction.id} · {transaction.reference}\n"
+        f"Tu écris en tant que : {role}.\n\n"
+        "Envoie ton message : il sera transmis aux autres participants.\n"
+        "/stop pour quitter la discussion."
+    )
+
+
+async def chat_message_handler(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> None:
+
+    message = update.message
+
+    if not message or not message.text or not update.effective_user:
+        return
+
+    if context.user_data.get("waiting_broadcast"):
+        return
+
+    transaction_id = None
+
+    # 1) Réponse Telegram directe à un message de discussion.
+    replied = message.reply_to_message
+
+    if replied and (replied.text or replied.caption):
+        match = CHAT_TAG.search(replied.text or replied.caption or "")
+
+        if match:
+            transaction_id = int(match.group(1))
+
+    # 2) Discussion ouverte avec le bouton « Répondre ».
+    if transaction_id is None:
+        transaction_id = context.user_data.get("chat_tx")
+
+    if not transaction_id:
+        return
+
+    text = message.text.strip()
+
+    if not text:
+        return
+
+    if len(text) > 5000:
+        await message.reply_text(
+            "❌ Message trop long (5000 caractères maximum)."
+        )
+        return
+
+    user, transaction, error = await _load_chat_context(
+        update.effective_user.id,
+        int(transaction_id),
+    )
+
+    if error:
+        context.user_data.pop("chat_tx", None)
+        await message.reply_text(error)
+        return
+
+    async with AsyncSessionLocal() as db:
+        tx = (
+            await db.execute(
+                select(Transaction).where(Transaction.id == transaction.id)
+            )
+        ).scalar_one()
+
+        sender = (
+            await db.execute(select(User).where(User.id == user.id))
+        ).scalar_one()
+
+        await post_message(db, tx, sender, text)
+
+    context.user_data["chat_tx"] = int(transaction_id)
+
+    await message.reply_text("✅ Message envoyé.")
+
 # ============================================================
 # CALLBACKS
 # ============================================================
@@ -1489,6 +1648,11 @@ async def callback_handler(
         return
 
     await query.answer()
+
+    if query.data and query.data.startswith("chat:"):
+        if query.from_user:
+            await open_chat_callback(query, context)
+        return
 
     if query.data == "help":
 
@@ -1793,6 +1957,26 @@ def build_application() -> Application:
             filters.TEXT & ~filters.COMMAND,
             broadcast_message_handler,
         )
+    )
+
+    # --------------------------------------------------------
+    # DISCUSSION DE TRANSACTION
+    # --------------------------------------------------------
+
+    application.add_handler(
+        CommandHandler(
+            "stop",
+            stop_command,
+        )
+    )
+
+    # Groupe 1 : s'exécute en plus du handler de diffusion (groupe 0).
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+            chat_message_handler,
+        ),
+        group=1,
     )
 
     # --------------------------------------------------------

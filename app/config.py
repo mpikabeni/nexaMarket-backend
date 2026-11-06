@@ -70,6 +70,9 @@ class Settings(BaseSettings):
     JESSIKAPAY_API_SECRET: str = ""
     NEXA_JP_NUMBER: str = ""
 
+    # Montant minimum d'un retrait (XAF).
+    MIN_WITHDRAWAL_XAF: int = 1000
+
     # ========================================================
     # TELEGRAM AUTH
     # ========================================================
