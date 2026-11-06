@@ -17,6 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.deposit import Deposit
+from app.services import money_notifications
 from app.services.jessikapay import JessiKaPayError, jessikapay_service
 from app.services.wallet_service import (
     DuplicateOperationError,
@@ -114,6 +115,7 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
     # Échec / expiration
     # ---------------------------------------------------------
     if provider_status in FAILED_STATUSES:
+        previous_status = deposit.status
         deposit.status = (
             "expired" if provider_status == "expired" else "failed"
         )
@@ -123,6 +125,11 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
             or f"Dépôt {provider_status}."
         )
         await db.commit()
+
+        # Prévenu une seule fois (pas lors d'une revérification admin).
+        if previous_status not in FINAL_STATUSES:
+            await money_notifications.deposit_failed(db, deposit)
+
         return deposit.status
 
     if provider_status not in PAID_STATUSES:
@@ -176,6 +183,10 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
     deposit.failure_reason = None
     deposit.paid_at = datetime.utcnow()
     await db.commit()
+
+    # Utilisateur + JessiKaPay ont confirmé : le bot prévient, sans
+    # aucune validation manuelle.
+    await money_notifications.deposit_paid(db, deposit)
 
     return "paid"
 
@@ -245,5 +256,7 @@ async def credit_deposit_manually(db: AsyncSession, deposit_id: int, admin_id: i
     deposit.paid_at = datetime.utcnow()
     deposit.failure_reason = f"Crédité manuellement (admin #{admin_id})" + (f" : {note}" if note else "")
     await db.commit()
+
+    await money_notifications.deposit_paid(db, deposit)
 
     return "paid"

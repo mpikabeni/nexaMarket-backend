@@ -12,6 +12,7 @@ from app.models.listing import Listing
 from app.models.platform import PlatformLedger, PlatformWallet
 from app.models.transaction import Transaction
 from app.models.user import User
+from app.services.chat_service import open_transaction_chat
 from app.services.notification_service import notify_user_id
 from app.services.wallet_service import (
     DuplicateOperationError,
@@ -420,11 +421,14 @@ class TransactionService:
         await self.db.commit()
         await self.db.refresh(transaction)
 
-        await self._notify(
-            transaction,
-            buyer="🛒 Achat confirmé : les fonds sont réservés. Un administrateur va organiser le transfert du canal.",
-            seller="💰 Nouvelle vente ! Les fonds de l'acheteur sont sécurisés. Un administrateur va vous contacter pour le transfert du canal.",
-        )
+        # Ouvre la discussion acheteur / vendeur / admin et prévient
+        # les trois dans le bot (remplace les anciennes notifications).
+        try:
+            await open_transaction_chat(self.db, transaction)
+        except Exception:  # noqa: BLE001
+            # L'achat est valide même si la notification échoue.
+            await self.db.rollback()
+            await self.db.refresh(transaction)
 
         return transaction
 

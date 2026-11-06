@@ -119,6 +119,12 @@ class WithdrawalService:
                 "Le montant du retrait doit être supérieur à 0."
             )
 
+        if amount < Decimal(settings.MIN_WITHDRAWAL_XAF):
+            raise WithdrawalServiceError(
+                "Le montant minimum de retrait est de "
+                f"{settings.MIN_WITHDRAWAL_XAF} XAF."
+            )
+
         if not jp_number:
             raise WithdrawalServiceError(
                 "Le numéro JessiKaPay est obligatoire."

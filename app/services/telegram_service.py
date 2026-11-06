@@ -420,15 +420,17 @@ class TelegramService:
         self,
         chat_id: int | str,
         text: str,
+        reply_markup=None,
     ):
         """
-        Envoie un message via le bot.
+        Envoie un message via le bot (boutons inline facultatifs).
         """
 
         try:
             return await self.bot.send_message(
                 chat_id=chat_id,
                 text=text,
+                reply_markup=reply_markup,
             )
         except TelegramError as exc:
             raise TelegramServiceError(

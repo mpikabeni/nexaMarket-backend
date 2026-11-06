@@ -16,12 +16,13 @@ logger = logging.getLogger("nexmarket.notify")
 _background_tasks: set[asyncio.Task] = set()
 
 
-async def _send(telegram_id: int, text: str) -> None:
+async def _send(telegram_id: int, text: str, reply_markup=None) -> None:
     try:
         await asyncio.wait_for(
             get_telegram_service().send_message(
                 chat_id=telegram_id,
                 text=text,
+                reply_markup=reply_markup,
             ),
             timeout=10,
         )
@@ -34,7 +35,11 @@ async def _send(telegram_id: int, text: str) -> None:
         )
 
 
-def notify_telegram(telegram_id: int | None, text: str) -> None:
+def notify_telegram(
+    telegram_id: int | None,
+    text: str,
+    reply_markup=None,
+) -> None:
     """Envoi non bloquant et sans exception (best effort)."""
 
     if not telegram_id:
@@ -42,7 +47,7 @@ def notify_telegram(telegram_id: int | None, text: str) -> None:
 
     try:
         task = asyncio.get_running_loop().create_task(
-            _send(telegram_id, text)
+            _send(telegram_id, text, reply_markup)
         )
     except RuntimeError:
         return
@@ -51,7 +56,12 @@ def notify_telegram(telegram_id: int | None, text: str) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
-async def notify_user_id(db, user_id: int | None, text: str) -> None:
+async def notify_user_id(
+    db,
+    user_id: int | None,
+    text: str,
+    reply_markup=None,
+) -> None:
     """Prévient un utilisateur à partir de son id NexMarket."""
 
     if not user_id:
@@ -67,8 +77,14 @@ async def notify_user_id(db, user_id: int | None, text: str) -> None:
         logger.warning("Notification : utilisateur illisible : %s", exc)
         return
 
-    notify_telegram(telegram_id, text)
+    notify_telegram(telegram_id, text, reply_markup)
 
+
+async def notify_admins(db, text: str, reply_markup=None) -> None:
+    """Prévient tous les administrateurs (copie d'information)."""
+
+    for chat_id in await admin_chat_ids(db):
+        notify_telegram(chat_id, text, reply_markup)
 
 
 class NotificationService:
