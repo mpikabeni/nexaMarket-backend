@@ -98,6 +98,10 @@ async def create_deposit(
         "status": dep.status,
         "payment_link": dep.payment_link,
         "code": dep.jessikapay_code,
+        # Frais JessiKaPay : l'utilisateur PAIE total_amount, son wallet
+        # est crédité de amount.
+        "fee_amount": provider.get("fee_amount"),
+        "total_amount": provider.get("total_amount"),
     }
 
 
