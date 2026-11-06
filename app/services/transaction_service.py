@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
 from app.models.listing import Listing
-from app.models.platform import PlatformLedger, PlatformWallet
+from app.models.platform import CommissionPayout, PlatformLedger, PlatformWallet
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.services.chat_service import open_transaction_chat
@@ -868,6 +868,25 @@ class TransactionService:
         )
 
         self.db.add(ledger)
+
+        # La commission doit arriver sur le compte JessiKaPay de
+        # NexMarket : on enregistre l'ordre de versement dans le MÊME
+        # commit que la vente (la tâche de fond l'exécute ensuite).
+        self.db.add(
+            CommissionPayout(
+                transaction_id=transaction.id,
+                reference=f"NMX-COM-{transaction.reference}",
+                amount=fee,
+                currency=currency,
+                status="pending" if currency == "XAF" else "manual",
+                attempts=0,
+                failure_reason=(
+                    None
+                    if currency == "XAF"
+                    else f"Devise {currency} : versement à faire à la main."
+                ),
+            )
+        )
 
         transaction.nexmarket_fee_recorded_at = (
             self._now()

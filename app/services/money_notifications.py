@@ -198,3 +198,35 @@ async def withdrawal_processing(db, withdrawal, *, needs_admin: bool) -> None:
                 "Ouvre la console > Retraits à vérifier.",
             )
         )
+
+
+# ============================================================
+# COMMISSIONS NEXMARKET -> compte JessiKaPay
+# ============================================================
+
+async def commission_sent(db, payout) -> None:
+    await _safe(
+        notify_admins(
+            db,
+            "💰 Commission versée sur votre compte JessiKaPay\n\n"
+            f"Montant : {fmt_amount(payout.amount, payout.currency)}\n"
+            f"Référence : {payout.reference}",
+        )
+    )
+
+
+async def commission_alert(db, payout) -> None:
+    """Versement incertain ou refusé : un humain doit vérifier."""
+
+    await _safe(
+        notify_admins(
+            db,
+            "⚠️ Commission à vérifier\n\n"
+            f"Montant : {fmt_amount(payout.amount, payout.currency)}\n"
+            f"Référence : {payout.reference}\n"
+            f"Statut : {payout.status}\n"
+            f"Détail : {payout.failure_reason or '-'}\n\n"
+            "Vérifiez dans JessiKaPay, puis tranchez dans la console "
+            "(Commissions).",
+        )
+    )

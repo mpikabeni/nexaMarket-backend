@@ -224,39 +224,24 @@ async def sync_pending_deposits(session_factory, *, max_age_hours: int = 48, lim
 
 async def credit_deposit_manually(db: AsyncSession, deposit_id: int, admin_id: int, note: str = "") -> str:
     """
-    Crédite un dépôt après vérification MANUELLE dans JessiKaPay.
-    Idempotent : la référence du dépôt empêche tout double crédit.
+    L'administrateur NE crédite PLUS d'argent lui-même.
+
+    Cette fonction force seulement une nouvelle vérification auprès de
+    JessiKaPay : le wallet n'est crédité que si JessiKaPay confirme le
+    paiement (et pour un montant au moins égal au montant demandé).
+    Sinon rien n'est crédité. Idempotent (référence unique).
     """
 
     deposit = (
-        await db.execute(
-            select(Deposit).where(Deposit.id == deposit_id).with_for_update()
-        )
+        await db.execute(select(Deposit).where(Deposit.id == deposit_id))
     ).scalar_one_or_none()
 
     if deposit is None:
         return "unknown"
 
-    if deposit.status == "paid":
-        return "paid"
+    logger.info(
+        "Dépôt %s : revérification demandée par l'admin #%s %s",
+        deposit.reference, admin_id, note,
+    )
 
-    try:
-        await WalletService(db).credit(
-            user_id=deposit.user_id,
-            amount=_money(deposit.amount),
-            reference=deposit.reference,
-            operation_type="deposit",
-            provider_reference=deposit.jessikapay_request_id,
-            description="Dépôt crédité manuellement par un administrateur",
-        )
-    except DuplicateOperationError:
-        pass
-
-    deposit.status = "paid"
-    deposit.paid_at = datetime.utcnow()
-    deposit.failure_reason = f"Crédité manuellement (admin #{admin_id})" + (f" : {note}" if note else "")
-    await db.commit()
-
-    await money_notifications.deposit_paid(db, deposit)
-
-    return "paid"
+    return await sync_deposit(db, deposit_id, force=True)
