@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from app.deps import CurrentUser, DBSession
 from app.models.message import Message
 from app.models.transaction import Transaction
+from app.models.user import User
 from app.models.schemas import MessageCreate
+from app.services.chat_service import display_name, post_message
 
 
 router = APIRouter(
@@ -127,6 +129,17 @@ async def get_transaction_messages(
         reversed(result.scalars().all())
     )
 
+    sender_ids = {m.sender_id for m in messages}
+    names: dict[int, str] = {}
+
+    if sender_ids:
+        for u in (
+            await db.execute(
+                select(User).where(User.id.in_(sender_ids))
+            )
+        ).scalars():
+            names[u.id] = display_name(u)
+
     return {
         "transaction_id": transaction.id,
         "messages": [
@@ -134,6 +147,7 @@ async def get_transaction_messages(
                 "id": message.id,
                 "transaction_id": message.transaction_id,
                 "sender_id": message.sender_id,
+                "sender_name": names.get(message.sender_id),
                 "sender_role": message.sender_role,
                 "content": message.content,
                 "message_type": message.message_type,
@@ -188,25 +202,6 @@ async def send_transaction_message(
         )
 
     # --------------------------------------------------------
-    # Déterminer le rôle de l'expéditeur
-    # --------------------------------------------------------
-
-    if current_user.is_admin:
-        sender_role = "admin"
-
-    elif transaction.buyer_id == current_user.id:
-        sender_role = "buyer"
-
-    elif transaction.seller_id == current_user.id:
-        sender_role = "seller"
-
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Expéditeur non autorisé.",
-        )
-
-    # --------------------------------------------------------
     # Validation du contenu
     # --------------------------------------------------------
 
@@ -231,56 +226,37 @@ async def send_transaction_message(
             ),
         )
 
-    # --------------------------------------------------------
-    # Type de message
-    # --------------------------------------------------------
-
     message_type = payload.message_type or "text"
 
-    allowed_types = {
-        "text",
-        "image",
-        "document",
-    }
-
-    if message_type not in allowed_types:
+    if message_type not in {"text", "image", "document"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Type de message invalide.",
         )
 
-    # --------------------------------------------------------
-    # Création
-    # --------------------------------------------------------
-
-    message = Message(
-        transaction_id=transaction.id,
-        sender_id=current_user.id,
-        sender_telegram_id=(
-            current_user.telegram_id
-        ),
-        sender_role=sender_role,
-        content=content or None,
-        message_type=message_type,
-        attachment_url=(
-            payload.attachment_url
-        ),
-        attachment_file_id=(
-            payload.attachment_file_id
-        ),
-        is_system_message=False,
-        is_read=False,
-    )
-
-    db.add(message)
-
-    await db.commit()
-    await db.refresh(message)
+    # Enregistrement + relais par le bot aux autres participants
+    # (le rôle et l'admin en charge sont gérés par le service).
+    try:
+        message = await post_message(
+            db,
+            transaction,
+            current_user,
+            content,
+            message_type=message_type,
+            attachment_url=payload.attachment_url,
+            attachment_file_id=payload.attachment_file_id,
+        )
+    except PermissionError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Expéditeur non autorisé.",
+        )
 
     return {
         "id": message.id,
         "transaction_id": message.transaction_id,
         "sender_id": message.sender_id,
+        "sender_name": display_name(current_user),
         "sender_role": message.sender_role,
         "content": message.content,
         "message_type": message.message_type,

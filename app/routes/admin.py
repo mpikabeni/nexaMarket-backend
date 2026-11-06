@@ -22,6 +22,7 @@ from app.config import settings
 from app.deps import CurrentAdmin, DBSession
 from app.models.channel import Channel
 from app.models.listing import Listing
+from app.services import money_notifications
 from app.services.notification_service import notify_user_id
 from app.models.message import Message
 from app.models.platform import PlatformWallet
@@ -1452,12 +1453,11 @@ async def resolve_withdrawal(
 
     if payload.action == "complete":
         await complete_withdrawal(db, withdrawal)
+        await money_notifications.withdrawal_completed(db, withdrawal)
     else:
-        await fail_withdrawal(
-            db,
-            withdrawal,
-            payload.note or "Retrait non effectué (décision admin).",
-        )
+        reason = payload.note or "Retrait non effectué (décision admin)."
+        await fail_withdrawal(db, withdrawal, reason)
+        await money_notifications.withdrawal_failed(db, withdrawal, reason)
 
     return {"id": withdrawal.id, "status": withdrawal.status}
 

@@ -11,6 +11,7 @@ from app.deps import get_current_user
 from app.models.deposit import Deposit
 from app.models.user import User
 from app.services.countries import COUNTRIES, is_supported, local_phone
+from app.services import money_notifications
 from app.services.deposit_sync import sync_deposit
 from app.services.jessikapay import JessiKaPayError, jessikapay_service
 
@@ -91,6 +92,9 @@ async def create_deposit(
     await db.commit()
     await db.refresh(dep)
 
+    # L'utilisateur a confirmé : le bot l'informe qu'on attend JessiKaPay.
+    await money_notifications.deposit_requested(db, dep)
+
     return {
         "id": dep.id,
         "reference": dep.reference,
@@ -98,10 +102,6 @@ async def create_deposit(
         "status": dep.status,
         "payment_link": dep.payment_link,
         "code": dep.jessikapay_code,
-        # Frais JessiKaPay : l'utilisateur PAIE total_amount, son wallet
-        # est crédité de amount.
-        "fee_amount": provider.get("fee_amount"),
-        "total_amount": provider.get("total_amount"),
     }
 
 

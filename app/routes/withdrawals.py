@@ -9,10 +9,12 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.db import get_db
 from app.deps import get_current_user
 from app.models.user import User
 from app.models.withdrawal import Withdrawal
+from app.services import money_notifications
 from app.services.jessikapay import (
     JessiKaPayError,
     jessikapay_service,
@@ -94,6 +96,17 @@ async def request_withdrawal(
         raise HTTPException(
             status_code=400,
             detail="Le montant doit être un nombre entier (XAF).",
+        )
+
+    min_amount = Decimal(settings.MIN_WITHDRAWAL_XAF)
+
+    if amount < min_amount:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Le montant minimum de retrait est de "
+                f"{int(min_amount):,} XAF.".replace(",", " ")
+            ),
         )
 
     # ========================================================
@@ -203,6 +216,10 @@ async def request_withdrawal(
             )
             await db.commit()
 
+            await money_notifications.withdrawal_processing(
+                db, withdrawal, needs_admin=True
+            )
+
             return {
                 "success": True,
                 "id": withdrawal.id,
@@ -210,7 +227,8 @@ async def request_withdrawal(
                 "provider": "jessikapay",
                 "status": withdrawal.status,
                 "message": (
-                    "Votre retrait est en cours de vérification."
+                    "Votre retrait est en cours de vérification. "
+                    "Le bot vous prévient dès la confirmation."
                 ),
             }
 
@@ -239,6 +257,10 @@ async def request_withdrawal(
         withdrawal.status = "failed"
 
         await db.commit()
+
+        await money_notifications.withdrawal_failed(
+            db, withdrawal, str(exc)
+        )
 
         raise HTTPException(
             status_code=502,
@@ -276,6 +298,10 @@ async def request_withdrawal(
         )
         await fail_withdrawal(db, withdrawal, str(reason))
 
+        await money_notifications.withdrawal_failed(
+            db, withdrawal, str(reason)
+        )
+
         raise HTTPException(
             status_code=502,
             detail=f"Retrait refusé par JessiKaPay : {reason}",
@@ -284,8 +310,12 @@ async def request_withdrawal(
     if provider_status in PENDING_STATUSES:
         withdrawal.status = "processing"
         await db.commit()
+        await money_notifications.withdrawal_processing(
+            db, withdrawal, needs_admin=False
+        )
     else:
         await complete_withdrawal(db, withdrawal)
+        await money_notifications.withdrawal_completed(db, withdrawal)
 
     await db.refresh(withdrawal)
 
@@ -302,9 +332,11 @@ async def request_withdrawal(
         "currency": withdrawal.currency,
         "status": withdrawal.status,
         "message": (
-            "Votre retrait a été effectué."
+            "Votre retrait a été effectué. Une confirmation "
+            "vous est envoyée dans le bot."
             if withdrawal.status == "completed"
-            else "Votre retrait est en cours de traitement."
+            else "Votre retrait est en cours de traitement. "
+            "Le bot vous prévient dès la confirmation."
         ),
     }
 
