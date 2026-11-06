@@ -37,6 +37,7 @@ from app.models.withdrawal import Withdrawal
 from app.models.deposit import Deposit
 from app.services.deposit_sync import credit_deposit_manually, sync_deposit
 from app.services.jessikapay import JessiKaPayError, jessikapay_service
+from app.models.platform import CommissionPayout
 from app.services.payout_settlement import complete_withdrawal, fail_withdrawal
 from app.models.report import Report
 from app.models.transaction import Transaction
@@ -1562,6 +1563,101 @@ async def credit_deposit(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dépôt introuvable.")
 
     return {"id": deposit_id, "status": result, "paid": result == "paid"}
+
+
+# ============================================================
+# COMMISSIONS vers le compte JessiKaPay NexMarket
+# ============================================================
+
+class CommissionResolveRequest(BaseModel):
+    action: str  # "sent" (déjà reçue dans JessiKaPay) ou "retry" (non reçue)
+    note: str = ""
+
+
+@router.get("/commissions")
+async def list_commissions(
+    current_admin: CurrentAdmin,
+    db: DBSession,
+    status_filter: str = "",
+    limit: int = 100,
+):
+    """Commissions à verser / à vérifier (tous statuts par défaut)."""
+
+    limit = max(1, min(limit, 200))
+
+    query = select(CommissionPayout).order_by(CommissionPayout.id.desc()).limit(limit)
+
+    if status_filter:
+        query = query.where(CommissionPayout.status == status_filter)
+
+    rows = (await db.execute(query)).scalars().all()
+
+    return {
+        "commissions": [
+            {
+                "id": c.id,
+                "transaction_id": c.transaction_id,
+                "reference": c.reference,
+                "amount": c.amount,
+                "currency": c.currency,
+                "status": c.status,
+                "attempts": c.attempts,
+                "failure_reason": c.failure_reason,
+                "created_at": c.created_at,
+                "sent_at": c.sent_at,
+            }
+            for c in rows
+        ]
+    }
+
+
+@router.post("/commissions/{commission_id}/resolve")
+async def resolve_commission(
+    commission_id: int,
+    payload: CommissionResolveRequest,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """
+    Tranche une commission « processing / failed / manual » APRÈS avoir
+    vérifié dans JessiKaPay :
+      - sent  : la commission est bien arrivée -> marquée versée ;
+      - retry : elle n'est PAS arrivée -> remise en file d'envoi.
+    """
+
+    row = (
+        await db.execute(
+            select(CommissionPayout)
+            .where(CommissionPayout.id == commission_id)
+            .with_for_update()
+        )
+    ).scalar_one_or_none()
+
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Commission introuvable.")
+
+    if row.status in ("sent", "pending", "sending"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"Cette commission est déjà « {row.status} ».",
+        )
+
+    note = (payload.note or "").strip()[:200]
+
+    if payload.action == "sent":
+        row.status = "sent"
+        row.sent_at = datetime.utcnow()
+        row.failure_reason = f"Confirmée par admin #{current_admin.id}" + (f" : {note}" if note else "")
+    elif payload.action == "retry":
+        row.status = "pending"
+        row.attempts = 0
+        row.failure_reason = f"Renvoi demandé par admin #{current_admin.id}" + (f" : {note}" if note else "")
+    else:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Action invalide (sent ou retry).")
+
+    await db.commit()
+
+    return {"id": row.id, "status": row.status}
 
 
 # ============================================================
