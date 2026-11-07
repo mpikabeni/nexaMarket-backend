@@ -1660,6 +1660,76 @@ async def resolve_commission(
     return {"id": row.id, "status": row.status}
 
 
+class AdminAddRequest(BaseModel):
+    telegram_id: int
+
+
+def _require_primary_admin(current_admin: User) -> None:
+    """Seul l'administrateur principal (ADMIN_TELEGRAM_ID) gère les admins."""
+
+    primary = int(settings.ADMIN_TELEGRAM_ID or 0)
+
+    if not primary or int(current_admin.telegram_id) != primary:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Seul l'administrateur principal peut ajouter ou retirer des administrateurs.",
+        )
+
+
+@router.post("/admins")
+async def add_admin(
+    payload: AdminAddRequest,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """Promeut un utilisateur (qui a déjà fait /start sur le bot) en admin."""
+
+    _require_primary_admin(current_admin)
+
+    user = (
+        await db.execute(select(User).where(User.telegram_id == payload.telegram_id))
+    ).scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "Utilisateur introuvable : il doit d'abord envoyer /start au bot.",
+        )
+
+    user.is_admin = True
+    user.is_active = True
+    await db.commit()
+
+    return {"telegram_id": user.telegram_id, "is_admin": True}
+
+
+@router.delete("/admins/{telegram_id}")
+async def remove_admin(
+    telegram_id: int,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    _require_primary_admin(current_admin)
+
+    if telegram_id == int(settings.ADMIN_TELEGRAM_ID or 0):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "L'administrateur principal ne peut pas être retiré.",
+        )
+
+    user = (
+        await db.execute(select(User).where(User.telegram_id == telegram_id))
+    ).scalar_one_or_none()
+
+    if user is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Utilisateur introuvable.")
+
+    user.is_admin = False
+    await db.commit()
+
+    return {"telegram_id": telegram_id, "is_admin": False}
+
+
 # ============================================================
 # PHOTOS DE PREUVE (consultation par l'administrateur)
 # ============================================================
