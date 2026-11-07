@@ -936,6 +936,8 @@ async def adminhelp_command(
         "<b>/broadcast</b> — envoyer un message à tous\n"
         "<b>/ban TELEGRAM_ID</b> — désactiver un compte\n"
         "<b>/unban TELEGRAM_ID</b> — réactiver un compte\n"
+        "<b>/addadmin TELEGRAM_ID</b> — ajouter un admin (principal seulement)\n"
+        "<b>/removeadmin TELEGRAM_ID</b> — retirer un admin (principal seulement)\n"
         "<b>/adminhelp</b> — cette aide\n\n"
         "🔐 Ces commandes sont réservées aux administrateurs."
     )
@@ -1266,6 +1268,89 @@ async def ban_command(
             f"NEXA ID : <code>{user.nexa_id}</code>",
             parse_mode=ParseMode.HTML,
         )
+
+
+
+# ============================================================
+# /ADDADMIN  /REMOVEADMIN  (administrateur principal uniquement)
+# ============================================================
+
+async def _primary_admin_required(update: Update) -> bool:
+    if not await admin_required(update):
+        return False
+
+    if (
+        not settings.ADMIN_TELEGRAM_ID
+        or update.effective_user.id != settings.ADMIN_TELEGRAM_ID
+    ):
+        await update.message.reply_text(
+            "⛔ Seul l'administrateur principal peut ajouter ou "
+            "retirer des administrateurs."
+        )
+        return False
+
+    return True
+
+
+async def _set_admin(update: Update, context, make_admin: bool) -> None:
+    if not await _primary_admin_required(update):
+        return
+
+    name = "addadmin" if make_admin else "removeadmin"
+
+    if not context.args:
+        await update.message.reply_text(
+            f"Utilisation : <code>/{name} TELEGRAM_ID</code>\n\n"
+            "La personne doit avoir envoyé /start au bot.",
+            parse_mode=ParseMode.HTML,
+        )
+        return
+
+    try:
+        telegram_id = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("❌ Le Telegram ID doit être un nombre.")
+        return
+
+    if not make_admin and telegram_id == settings.ADMIN_TELEGRAM_ID:
+        await update.message.reply_text(
+            "❌ L'administrateur principal ne peut pas être retiré."
+        )
+        return
+
+    async with AsyncSessionLocal() as db:
+        user = (
+            await db.execute(select(User).where(User.telegram_id == telegram_id))
+        ).scalar_one_or_none()
+
+        if not user:
+            await update.message.reply_text(
+                "❌ Utilisateur introuvable : il doit d'abord envoyer /start au bot."
+            )
+            return
+
+        user.is_admin = make_admin
+
+        if make_admin:
+            user.is_active = True
+
+        await db.commit()
+
+        await update.message.reply_text(
+            ("👑 <b>Administrateur ajouté.</b>" if make_admin
+             else "✅ <b>Administrateur retiré.</b>")
+            + f"\n\nTelegram ID : <code>{telegram_id}</code>\n"
+            f"NEXA ID : <code>{user.nexa_id}</code>",
+            parse_mode=ParseMode.HTML,
+        )
+
+
+async def addadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _set_admin(update, context, True)
+
+
+async def removeadmin_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await _set_admin(update, context, False)
 
 
 # ============================================================
@@ -1938,6 +2023,20 @@ def build_application() -> Application:
         CommandHandler(
             "unban",
             unban_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "addadmin",
+            addadmin_command,
+        )
+    )
+
+    application.add_handler(
+        CommandHandler(
+            "removeadmin",
+            removeadmin_command,
         )
     )
 
