@@ -52,3 +52,16 @@ Aucune migration SQL nécessaire.
 - Sécurité : statut « sending » enregistré avant l'appel, aucun renvoi
   automatique après timeout, 5 essais max après refus explicite.
 - Nouveaux fichiers : services/commission_service.py, MIGRATION_v19.sql.
+
+- **Ajout d'admins** : `/addadmin TELEGRAM_ID` et `/removeadmin TELEGRAM_ID`
+  dans le bot, `POST /admin/admins` et `DELETE /admin/admins/{telegram_id}`
+  (bouton « + Ajouter un admin » dans la console). Réservé à l'admin
+  principal (ADMIN_TELEGRAM_ID) ; il ne peut pas être retiré.
+
+- **Statuts « payé » resserrés** : seuls paid / completed / success /
+  successful / succeeded créditent le wallet. Autre mot de JessiKaPay :
+  variable Render `JESSIKAPAY_PAID_STATUSES` (séparés par des virgules).
+
+- **Commission verrouillée à 5 %** : le taux est forcé à 0,05 dans la config
+  (même si NEXMARKET_FEE_RATE est modifiée sur Render) et dans chaque nouvelle
+  transaction (le taux stocké sur d'anciennes annonces est ignoré).
