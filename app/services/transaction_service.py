@@ -164,9 +164,9 @@ class TransactionService:
         currency = listing.currency.upper()
 
         # Le taux est stocké avec 6 décimales : pas d'arrondi à 0.01.
-        fee_rate = Decimal(
-            str(listing.platform_fee_rate)
-        )
+        # Commission FIXE : 5 % du prix de vente, quel que soit le taux
+        # enregistré sur l'annonce (anciennes annonces comprises).
+        fee_rate = Decimal("0.05")
 
         platform_fee = self._money(
             price * fee_rate

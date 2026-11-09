@@ -10,6 +10,7 @@ point d'état du prestataire (GET /external/v1/deposit-request/{id}/status)
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timedelta
 from decimal import Decimal, InvalidOperation
 
@@ -27,9 +28,15 @@ from app.services.wallet_service import (
 
 logger = logging.getLogger("nexmarket.deposits")
 
-PAID_STATUSES = {
-    "paid", "completed", "complete", "success", "successful", "succeeded",
-    "confirmed", "approved", "validated", "done", "captured", "settled",
+# Statuts qui prouvent que l'argent est réellement reçu. Liste volontairement
+# stricte (argent réel) : des mots vagues comme « approved » ou « validated »
+# peuvent désigner une étape intermédiaire. Si JessiKaPay utilise un autre mot
+# pour « payé », ajoutez-le dans la variable Render JESSIKAPAY_PAID_STATUSES
+# (séparés par des virgules) ; le statut brut reçu est écrit dans les logs.
+PAID_STATUSES = {"paid", "completed", "success", "successful", "succeeded"} | {
+    item.strip().lower()
+    for item in os.environ.get("JESSIKAPAY_PAID_STATUSES", "").split(",")
+    if item.strip()
 }
 FAILED_STATUSES = {"failed", "failure", "expired", "cancelled", "canceled", "rejected", "declined", "refused"}
 FINAL_STATUSES = {"paid", "failed", "expired", "cancelled", "rejected", "amount_mismatch"}
