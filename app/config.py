@@ -95,6 +95,16 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: str = ""
 
+    @field_validator("NEXMARKET_FEE_RATE")
+    @classmethod
+    def _fee_rate_is_fixed(cls, value: float) -> float:
+        """La commission NexMarket est FIXE : 5 % du prix de vente.
+
+        Même si NEXMARKET_FEE_RATE est modifiée sur Render, 5 % est appliqué.
+        """
+
+        return 0.05
+
     @field_validator("JWT_SECRET")
     @classmethod
     def _jwt_secret_strong(cls, value: str) -> str:
