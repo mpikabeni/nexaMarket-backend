@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from decimal import ROUND_DOWN, Decimal
 
 from sqlalchemy import select
 
@@ -81,9 +82,19 @@ async def _send_one(session_factory, payout_id: int, jp_number: str) -> bool:
         row.attempts = (row.attempts or 0) + 1
         await db.commit()
 
+        # L'API JessiKaPay n'accepte que des FCFA entiers : on verse la
+        # partie entière (moins d'1 XAF reste sur le solde de l'app).
+        whole = int(Decimal(row.amount).to_integral_value(rounding=ROUND_DOWN))
+
+        if whole <= 0:
+            row.status = "sent"
+            row.failure_reason = "Commission inférieure à 1 XAF : rien à verser."
+            await db.commit()
+            return False
+
         payload = {
             "jp_number": jp_number,
-            "amount": float(row.amount),
+            "amount": whole,
             "reference": row.reference,
             "description": f"Commission NexMarket {row.reference}",
         }

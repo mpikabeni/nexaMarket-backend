@@ -12,11 +12,12 @@ from __future__ import annotations
 import logging
 import os
 from datetime import datetime, timedelta
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.config import settings
 from app.models.deposit import Deposit
 from app.services import money_notifications
 from app.services.jessikapay import JessiKaPayError, jessikapay_service
@@ -71,6 +72,27 @@ def _money(value) -> Decimal | None:
         return Decimal(str(value)).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError, TypeError):
         return None
+
+
+def split_deposit(amount) -> tuple[Decimal, Decimal]:
+    """(commission JessiKaPay, montant NET crédité au wallet) en XAF entiers.
+
+    JessiKaPay prélève 6 % sur ce que NexMarket reçoit : le wallet n'est
+    crédité que du net. Arrondi toujours en faveur de la solvabilité (le net
+    est arrondi vers le bas : jamais plus que ce que NexMarket reçoit).
+    """
+
+    total = Decimal(str(amount))
+    rate = Decimal(str(settings.JESSIKAPAY_DEPOSIT_COMMISSION_RATE))
+    net = (total * (Decimal(1) - rate)).to_integral_value(rounding=ROUND_FLOOR)
+    return total - net, net
+
+
+def total_to_pay(amount) -> Decimal:
+    """Montant approximatif payé par l'utilisateur (frais Mobile Money +3 %)."""
+
+    rate = Decimal(str(settings.JESSIKAPAY_USER_FEE_RATE))
+    return (Decimal(str(amount)) * (Decimal(1) + rate)).to_integral_value(rounding=ROUND_CEILING)
 
 
 async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False) -> str:
@@ -171,14 +193,24 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
         logger.error("Dépôt %s : %s", deposit.reference, deposit.failure_reason)
         return deposit.status
 
+    # Montant NET à créditer (après la commission JessiKaPay de 6 %).
+    if deposit.net_amount_credited is None or deposit.commission_amount is None:
+        deposit.commission_amount, deposit.net_amount_credited = split_deposit(expected)
+
+    net = _money(deposit.net_amount_credited)
+
+    if net is None or net <= 0:
+        logger.error("Dépôt %s : montant net nul, aucun crédit.", deposit.reference)
+        return deposit.status
+
     try:
         await WalletService(db).credit(
             user_id=deposit.user_id,
-            amount=expected,
+            amount=net,
             reference=deposit.reference,
             operation_type="deposit",
             provider_reference=deposit.jessikapay_request_id,
-            description="Dépôt confirmé par JessiKaPay",
+            description="Dépôt confirmé par JessiKaPay (net après frais)",
         )
     except DuplicateOperationError:
         pass  # déjà crédité lors d'un passage interrompu

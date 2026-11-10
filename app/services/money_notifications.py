@@ -74,6 +74,9 @@ async def deposit_requested(db, deposit) -> None:
             deposit.user_id,
             "⏳ Demande de dépôt enregistrée\n\n"
             f"Montant : {fmt_amount(deposit.amount, deposit.currency)}\n"
+            f"Ton solde sera crédité de : "
+            f"{fmt_amount(deposit.net_amount_credited if deposit.net_amount_credited is not None else deposit.amount, deposit.currency)} "
+            "(après les frais JessiKaPay)\n"
             f"Référence : {deposit.reference}\n\n"
             "Termine le paiement Mobile Money. Dès que JessiKaPay le "
             "confirme, ton solde est crédité automatiquement et tu es "
@@ -84,7 +87,12 @@ async def deposit_requested(db, deposit) -> None:
 
 
 async def deposit_paid(db, deposit) -> None:
-    amount = fmt_amount(deposit.amount, deposit.currency)
+    credited = (
+        deposit.net_amount_credited
+        if deposit.net_amount_credited is not None
+        else deposit.amount
+    )
+    amount = fmt_amount(credited, deposit.currency)
 
     await _safe(
         notify_user_id(
@@ -102,7 +110,8 @@ async def deposit_paid(db, deposit) -> None:
             db,
             "💰 Dépôt confirmé automatiquement\n\n"
             f"Utilisateur : {await _who(db, deposit.user_id)}\n"
-            f"Montant : {amount}\n"
+            f"Montant demandé : {fmt_amount(deposit.amount, deposit.currency)}\n"
+            f"Crédité à l'utilisateur (net) : {amount}\n"
             f"Référence : {deposit.reference}\n\n"
             "Aucune action requise.",
         )
