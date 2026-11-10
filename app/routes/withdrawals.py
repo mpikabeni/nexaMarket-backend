@@ -188,7 +188,7 @@ async def request_withdrawal(
 
     payout_payload = {
         "jp_number": jp_number,
-        "amount": float(amount),
+        "amount": int(amount),  # l'API JessiKaPay attend un entier (FCFA)
         "reference": reference,
         "description": (
             f"NexMarket withdrawal {reference}"

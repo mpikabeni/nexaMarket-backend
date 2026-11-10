@@ -12,7 +12,8 @@ from app.models.deposit import Deposit
 from app.models.user import User
 from app.services.countries import COUNTRIES, is_supported, local_phone
 from app.services import money_notifications
-from app.services.deposit_sync import sync_deposit
+from app.config import settings
+from app.services.deposit_sync import split_deposit, sync_deposit, total_to_pay
 from app.services.jessikapay import JessiKaPayError, jessikapay_service
 
 router = APIRouter(prefix="/deposits", tags=["Deposits"])
@@ -41,6 +42,11 @@ async def create_deposit(
         raise HTTPException(400, "Le montant doit être un nombre entier (XAF).")
 
     amount = int(payload.amount)
+    commission, net = split_deposit(amount)
+
+    if net < 1:
+        raise HTTPException(400, "Montant trop faible pour un dépôt.")
+
     country = payload.country.strip().upper()
 
     if not is_supported(country):
@@ -84,6 +90,8 @@ async def create_deposit(
         jessikapay_request_id=str(request_id),
         jessikapay_code=provider.get("code"),
         payment_link=provider.get("payment_link"),
+        commission_amount=commission,
+        net_amount_credited=net,
         status=provider.get("status", "pending"),
         expires_at=None,
     )
@@ -99,6 +107,9 @@ async def create_deposit(
         "id": dep.id,
         "reference": dep.reference,
         "amount": float(dep.amount),
+        "commission_amount": float(commission),
+        "net_amount": float(net),
+        "total_to_pay": float(total_to_pay(dep.amount)),
         "status": dep.status,
         "payment_link": dep.payment_link,
         "code": dep.jessikapay_code,
@@ -124,6 +135,11 @@ async def my_deposits(
             "id": d.id,
             "reference": d.reference,
             "amount": float(d.amount),
+            "net_amount": float(
+                d.net_amount_credited
+                if d.net_amount_credited is not None
+                else split_deposit(d.amount)[1]
+            ),
             "status": d.status,
             "created_at": d.created_at.isoformat(),
         }
@@ -157,6 +173,16 @@ async def check_deposit(
     status = await sync_deposit(db, deposit_id)
 
     return {"id": deposit_id, "status": status, "paid": status == "paid"}
+
+
+@router.get("/fees")
+async def deposit_fees():
+    """Frais appliqués par JessiKaPay aux dépôts (affichés avant de payer)."""
+
+    return {
+        "commission_rate": settings.JESSIKAPAY_DEPOSIT_COMMISSION_RATE,
+        "user_fee_rate": settings.JESSIKAPAY_USER_FEE_RATE,
+    }
 
 
 @router.get("/countries")
