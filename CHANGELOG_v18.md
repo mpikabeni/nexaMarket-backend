@@ -65,3 +65,8 @@ Aucune migration SQL nécessaire.
 - **Commission verrouillée à 5 %** : le taux est forcé à 0,05 dans la config
   (même si NEXMARKET_FEE_RATE est modifiée sur Render) et dans chaque nouvelle
   transaction (le taux stocké sur d'anciennes annonces est ignoré).
+
+- **Devise d'affichage (EUR / USD) + langue** : nouvelle route publique
+  `GET /api/rates` (EUR = parité fixe 655,957 ; USD via open.er-api.com, cache
+  6 h, variable optionnelle `USD_XAF_RATE` pour imposer un taux). Affichage
+  indicatif uniquement : l'argent réel reste en XAF.
