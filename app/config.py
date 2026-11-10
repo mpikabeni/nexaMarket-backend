@@ -59,6 +59,17 @@ class Settings(BaseSettings):
     SUPPORTED_CURRENCIES: str = "XAF,XOF,USD,EUR"
 
     # ========================================================
+    # FRAIS JESSIKAPAY SUR LES DÉPÔTS (doc JessiKaPay)
+    # - commission de 6 % prélevée sur ce que NexMarket reçoit ;
+    # - 3 % de frais Mobile Money ajoutés au montant payé par l'utilisateur.
+    # Le wallet est crédité du montant NET (après les 6 %), jamais plus que
+    # ce que NexMarket reçoit réellement.
+    # ========================================================
+
+    JESSIKAPAY_DEPOSIT_COMMISSION_RATE: float = 0.06
+    JESSIKAPAY_USER_FEE_RATE: float = 0.03
+
+    # ========================================================
     # JESSIKAPAY
     # ========================================================
 
