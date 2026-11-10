@@ -70,3 +70,16 @@ Aucune migration SQL nécessaire.
   `GET /api/rates` (EUR = parité fixe 655,957 ; USD via open.er-api.com, cache
   6 h, variable optionnelle `USD_XAF_RATE` pour imposer un taux). Affichage
   indicatif uniquement : l'argent réel reste en XAF.
+
+- **Montants entiers vers JessiKaPay** (doc : `amount` = int en FCFA) : retraits
+  et versements de commission envoient des entiers (commission arrondie à
+  l'entier inférieur).
+
+- **Dépôts : le wallet est crédité du montant NET** (option B). JessiKaPay
+  prélève 6 % sur ce que NexMarket reçoit (doc) : 20 000 F déposés -> 18 800 F
+  sur le wallet, commission de 1 200 F enregistrée (commission_amount /
+  net_amount_credited). Net arrondi vers le bas : jamais plus que ce qui est
+  reçu. Nouvelle route `GET /api/deposits/fees` ; l'écran de dépôt affiche
+  frais, montant reçu et total à payer (≈ +3 % Mobile Money) avant de payer.
+  Variables optionnelles : JESSIKAPAY_DEPOSIT_COMMISSION_RATE (0.06),
+  JESSIKAPAY_USER_FEE_RATE (0.03).
