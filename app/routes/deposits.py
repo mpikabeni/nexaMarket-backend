@@ -64,7 +64,7 @@ async def create_deposit(
     try:
         provider = await jessikapay_service.create_deposit(
             {
-                "telegram_id": str(user.telegram_id),
+                "telegram_id": int(user.telegram_id),  # entier, comme dans la doc JessiKaPay
                 "name": user.first_name or user.username or "NexMarket",
                 "country": country,
                 "phone": phone,
