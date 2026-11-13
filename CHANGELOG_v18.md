@@ -83,3 +83,19 @@ Aucune migration SQL nécessaire.
   frais, montant reçu et total à payer (≈ +3 % Mobile Money) avant de payer.
   Variables optionnelles : JESSIKAPAY_DEPOSIT_COMMISSION_RATE (0.06),
   JESSIKAPAY_USER_FEE_RATE (0.03).
+
+- **Dépôt jamais confirmé : lien JessiKaPay ouvert dans Telegram.** Le lien
+  (https://t.me/JessiKaPayBot/app?startapp=extdeposit_…) est un lien Telegram :
+  l'app l'ouvrait avec openLink (comme un site web) -> JessiKaPay ne reconnaissait
+  pas le compte Telegram et le paiement n'était jamais fait. Il s'ouvre maintenant
+  avec openTelegramLink. `telegram_id` est envoyé en entier (comme dans la doc).
+  Le serveur garde l'étape réelle chez JessiKaPay (pending / reviewing /
+  awaiting_payment) ; si rien n'est reçu au bout de 90 s, l'app conseille
+  d'ouvrir le lien depuis Telegram avec le même compte.
+
+- **Dépôt payé chez JessiKaPay mais pas crédité** : le contrôle de montant est
+  assoupli (on accepte tout montant déclaré >= au net à créditer, quelle que
+  soit la façon dont l'API remplit « amount »). Si un dépôt payé ne peut pas
+  être crédité, la raison est enregistrée (failure_reason) et les admins sont
+  prévenus dans le bot, une seule fois. « Revérifier » (console admin) relance
+  le crédit.
