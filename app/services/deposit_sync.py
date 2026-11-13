@@ -44,7 +44,7 @@ FINAL_STATUSES = {"paid", "failed", "expired", "cancelled", "rejected", "amount_
 
 
 # Statuts « en cours » normaux : inutile de les journaliser à chaque passage.
-WAITING_STATUSES = {"", "pending", "waiting", "created", "processing", "initiated", "in_progress", "awaiting_payment", "unpaid"}
+WAITING_STATUSES = {"", "pending", "reviewing", "waiting", "created", "processing", "initiated", "in_progress", "awaiting_payment", "unpaid"}
 
 
 def _unwrap(response: dict) -> dict:
@@ -72,6 +72,18 @@ def _money(value) -> Decimal | None:
         return Decimal(str(value)).quantize(Decimal("0.01"))
     except (InvalidOperation, ValueError, TypeError):
         return None
+
+
+async def _needs_attention(db, deposit, reason: str) -> None:
+    """Dépôt PAYÉ chez JessiKaPay mais pas crédité : on garde la raison et on
+    prévient les admins dans le bot (une seule fois par raison)."""
+
+    if deposit.failure_reason == reason:
+        return
+    deposit.failure_reason = reason
+    await db.commit()
+    logger.error("Dépôt %s payé mais non crédité : %s", deposit.reference, reason)
+    await money_notifications.deposit_attention(db, deposit, reason)
 
 
 def split_deposit(amount) -> tuple[Decimal, Decimal]:
@@ -162,6 +174,12 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
         return deposit.status
 
     if provider_status not in PAID_STATUSES:
+        # Étapes intermédiaires de JessiKaPay : on les garde pour savoir où
+        # en est l'utilisateur (lien pas ouvert / revue / paiement en cours).
+        if provider_status in {"pending", "reviewing", "awaiting_payment"} \
+                and deposit.status != provider_status:
+            deposit.status = provider_status
+            await db.commit()
         return deposit.status
 
     # ---------------------------------------------------------
@@ -181,18 +199,6 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
     expected = _money(deposit.amount)
     reported = _money(response.get("amount")) if response.get("amount") is not None else None
 
-    # On ne crédite jamais MOINS que le montant demandé. Un montant
-    # supérieur (frais ajoutés par l'opérateur) est accepté : on crédite
-    # exactement le montant demandé.
-    if reported is not None and expected is not None and reported < expected:
-        deposit.status = "amount_mismatch"
-        deposit.failure_reason = (
-            f"Montant incohérent : attendu {expected}, reçu {reported}."
-        )
-        await db.commit()
-        logger.error("Dépôt %s : %s", deposit.reference, deposit.failure_reason)
-        return deposit.status
-
     # Montant NET à créditer (après la commission JessiKaPay de 6 %).
     if deposit.net_amount_credited is None or deposit.commission_amount is None:
         deposit.commission_amount, deposit.net_amount_credited = split_deposit(expected)
@@ -200,7 +206,20 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
     net = _money(deposit.net_amount_credited)
 
     if net is None or net <= 0:
-        logger.error("Dépôt %s : montant net nul, aucun crédit.", deposit.reference)
+        await _needs_attention(db, deposit, "Montant net nul, aucun crédit possible.")
+        return deposit.status
+
+    # On ne crédite jamais plus que ce que JessiKaPay déclare. Selon la
+    # version de l'API, « amount » est le montant demandé, le total payé ou
+    # le net : on accepte tout montant >= au net à créditer.
+    if reported is not None and reported < net:
+        deposit.status = "amount_mismatch"
+        await _needs_attention(
+            db,
+            deposit,
+            f"Montant incohérent : JessiKaPay indique {reported}, "
+            f"net à créditer {net} (demandé {expected}).",
+        )
         return deposit.status
 
     try:
@@ -216,6 +235,7 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
         pass  # déjà crédité lors d'un passage interrompu
     except WalletServiceError as exc:
         logger.error("Dépôt %s : crédit impossible : %s", deposit.reference, exc)
+        await _needs_attention(db, deposit, f"Crédit du wallet impossible : {exc}")
         return deposit.status
 
     deposit.status = "paid"

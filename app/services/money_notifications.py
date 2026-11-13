@@ -239,3 +239,18 @@ async def commission_alert(db, payout) -> None:
             "(Commissions).",
         )
     )
+
+
+async def deposit_attention(db, deposit, reason: str) -> None:
+    """JessiKaPay indique « payé » mais le wallet n'a pas pu être crédité."""
+
+    await _safe(
+        notify_admins(
+            db,
+            "⚠️ Dépôt payé chez JessiKaPay mais NON crédité\n\n"
+            f"Montant demandé : {fmt_amount(deposit.amount, deposit.currency)}\n"
+            f"Référence : {deposit.reference}\n"
+            f"Raison : {reason}\n\n"
+            "Après correction, utilisez « Revérifier » sur ce dépôt dans la console admin.",
+        )
+    )
