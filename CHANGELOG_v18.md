@@ -99,3 +99,22 @@ Aucune migration SQL nécessaire.
   être crédité, la raison est enregistrée (failure_reason) et les admins sont
   prévenus dans le bot, une seule fois. « Revérifier » (console admin) relance
   le crédit.
+
+# v20 — Paiement en GRAM (TON) : deuxième moyen de paiement
+
+Le vendeur choisit, par annonce, JessiKaPay (FCFA) ou GRAM. En GRAM :
+1. Vendeur : saisit son adresse GRAM à la création (somme de contrôle vérifiée).
+2. Acheteur : saisit son adresse (remboursement), puis envoie le prix à l'adresse
+   de NexMarket avec un commentaire unique (NMX-G-XXXXXXXXXX).
+3. Le serveur LIT la blockchain (toncenter, sans clé privée) toutes les 20 s :
+   bon commentaire + bon montant + transaction réussie -> escrow normal
+   (discussion, transfert du canal, période de protection).
+4. À la fin, l'admin reçoit une alerte dans le bot et dans la console (onglet
+   GRAM) : il envoie lui-même prix - 5 % au vendeur (la commission reste dans
+   son portefeuille) puis saisit le hash ; le serveur le vérifie sur la
+   blockchain avant de clôturer. Même principe pour un remboursement.
+
+Configuration (Render) : GRAM_RECEIVE_ADDRESS = adresse du portefeuille NexMarket
+(copiée depuis l'app « Argent »). Optionnel : TON_API_KEY, TON_API_BASE.
+Vide ou invalide = paiement GRAM désactivé (erreur claire dans les logs).
+Nouvelles colonnes ajoutées automatiquement au démarrage (MIGRATION_v20.sql).
