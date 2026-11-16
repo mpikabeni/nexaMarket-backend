@@ -165,6 +165,13 @@ async def init_db() -> None:
 # base (aucun SQL à lancer à la main).
 SCHEMA_PATCHES = [
     "ALTER TABLE deposits ADD COLUMN IF NOT EXISTS country VARCHAR(10)",
+    # Paiement en GRAM (v20)
+    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS seller_gram_address VARCHAR(80)",
+    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS buyer_gram_address VARCHAR(80)",
+    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS seller_gram_address VARCHAR(80)",
+    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gram_tx_hash VARCHAR(120)",
+    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gram_release_tx_hash VARCHAR(120)",
+    "CREATE INDEX IF NOT EXISTS ix_transactions_gram_tx_hash ON transactions (gram_tx_hash)",
 ]
 
 

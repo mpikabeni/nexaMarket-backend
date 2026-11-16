@@ -70,6 +70,16 @@ class Settings(BaseSettings):
     JESSIKAPAY_USER_FEE_RATE: float = 0.03
 
     # ========================================================
+    # PAIEMENT EN GRAM (TON) : adresse de NexMarket + lecture blockchain
+    # GRAM_RECEIVE_ADDRESS : adresse du portefeuille de NexMarket (copiée
+    # depuis l'app Telegram « Argent »). Vide = paiement GRAM désactivé.
+    # ========================================================
+
+    GRAM_RECEIVE_ADDRESS: str = ""
+    TON_API_BASE: str = "https://toncenter.com/api/v3"
+    TON_API_KEY: str = ""
+
+    # ========================================================
     # JESSIKAPAY
     # ========================================================
 

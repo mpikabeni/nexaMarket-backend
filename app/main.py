@@ -29,6 +29,7 @@ from app.routes import (
     wallet,
     withdrawals,
 )
+from app.services import gram_service
 from app.services.commission_service import settle_pending_commissions
 from app.services.deposit_sync import sync_pending_deposits
 from app.services.jessikapay import JessiKaPayError
@@ -101,6 +102,31 @@ async def _deposit_sync_loop() -> None:
             logger.exception("Échec de la vérification des dépôts")
 
         await asyncio.sleep(DEPOSIT_SYNC_INTERVAL_SECONDS)
+
+
+# ============================================================
+# PAIEMENTS EN GRAM : lecture de la blockchain (aucune clé privée)
+# ============================================================
+
+async def _gram_loop() -> None:
+    if settings.GRAM_RECEIVE_ADDRESS.strip() and not gram_service.enabled():
+        logger.error(
+            "GRAM_RECEIVE_ADDRESS est invalide (faute de frappe ?) : "
+            "le paiement en GRAM reste DÉSACTIVÉ. Recopiez l'adresse depuis le portefeuille."
+        )
+    while True:
+        try:
+            if gram_service.enabled():
+                paid = await gram_service.confirm_pending_payments(AsyncSessionLocal)
+                if paid:
+                    logger.info("%s paiement(s) GRAM confirmé(s)", paid)
+                await gram_service.alert_pending_tasks(AsyncSessionLocal)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Échec de la lecture des paiements GRAM")
+
+        await asyncio.sleep(20)
 
 
 # ============================================================
@@ -291,6 +317,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_maintenance_loop()),
         asyncio.create_task(_deposit_sync_loop()),
         asyncio.create_task(_commission_loop()),
+        asyncio.create_task(_gram_loop()),
         asyncio.create_task(_keepalive_loop()),
     ]
 
