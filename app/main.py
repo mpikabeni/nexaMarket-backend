@@ -22,6 +22,7 @@ from app.routes import (
     messages,
     rates,
     reports,
+    webhooks,
     reviews,
     stats,
     transactions,
@@ -437,6 +438,7 @@ for router_module in [
     admin,
     deposits,
     withdrawals,
+    webhooks,
 ]:
     app.include_router(router_module.router, prefix="/api")
 
