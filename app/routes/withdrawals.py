@@ -286,9 +286,18 @@ async def request_withdrawal(
     #  - refus explicite  -> fonds rendus ;
     #  - en attente       -> reste "processing" (décision admin) ;
     #  - sinon (accepté)  -> fonds consommés, retrait terminé.
-    provider_status = str(
-        payout_response.get("status") or "completed"
-    ).lower()
+    # Réponse de succès documentée : {"success": true, "transaction_id": ...}.
+    # Sans cette confirmation explicite, on ne termine PAS le retrait (les
+    # fonds restent bloqués et un admin tranche) : mieux vaut un retrait « à
+    # vérifier » qu'un retrait marqué payé alors que rien n'est parti.
+    confirmed = (
+        payout_response.get("success") is True
+        or bool(payout_response.get("transaction_id"))
+    )
+    provider_status = str(payout_response.get("status") or "").lower()
+
+    if payout_response.get("success") is False and not provider_status:
+        provider_status = "failed"
 
     if provider_status in FAILED_STATUSES:
         reason = (
@@ -307,11 +316,16 @@ async def request_withdrawal(
             detail=f"Retrait refusé par JessiKaPay : {reason}",
         )
 
-    if provider_status in PENDING_STATUSES:
+    if provider_status in PENDING_STATUSES or not confirmed:
         withdrawal.status = "processing"
+        if not confirmed:
+            withdrawal.failure_reason = (
+                "Réponse JessiKaPay sans confirmation de succès : à vérifier "
+                f"dans JessiKaPay (référence {withdrawal.reference})."
+            )
         await db.commit()
         await money_notifications.withdrawal_processing(
-            db, withdrawal, needs_admin=False
+            db, withdrawal, needs_admin=not confirmed
         )
     else:
         await complete_withdrawal(db, withdrawal)
