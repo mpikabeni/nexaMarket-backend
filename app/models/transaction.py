@@ -217,6 +217,26 @@ class Transaction(Base):
     # ADMIN / DISPUTE
     # =========================================================
 
+    # ========================================================
+    # PAIEMENT EN GRAM (TON)
+    # ========================================================
+
+    # Adresses fournies par l'acheteur (remboursement) et le vendeur (paiement).
+    buyer_gram_address: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    seller_gram_address: Mapped[str | None] = mapped_column(
+        String(80), nullable=True
+    )
+    # Hash du virement reçu de l'acheteur / de l'envoi fait au vendeur
+    # (ou du remboursement) par l'administrateur.
+    gram_tx_hash: Mapped[str | None] = mapped_column(
+        String(120), nullable=True, index=True
+    )
+    gram_release_tx_hash: Mapped[str | None] = mapped_column(
+        String(120), nullable=True
+    )
+
     admin_note: Mapped[str | None] = mapped_column(
         Text,
         nullable=True,

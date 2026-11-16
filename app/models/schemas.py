@@ -176,6 +176,9 @@ class ListingCreate(BaseModel):
         max_length=4,
     )
 
+    # Annonce payée en GRAM (currency == "GRAM") : adresse du vendeur.
+    gram_address: str | None = Field(default=None, max_length=80)
+
 
 class ListingUpdate(BaseModel):
     price: Decimal | None = Field(
@@ -240,6 +243,8 @@ class ListingModeration(BaseModel):
 
 class TransactionCreate(BaseModel):
     listing_id: int
+    # Annonce payée en GRAM : adresse de l'acheteur (sert au remboursement).
+    buyer_gram_address: str | None = Field(default=None, max_length=80)
 
 
 class TransactionResponse(APIModel):
@@ -291,6 +296,12 @@ class TransactionResponse(APIModel):
 
     created_at: datetime
     updated_at: datetime
+
+    # Paiement en GRAM
+    buyer_gram_address: str | None = None
+    gram_tx_hash: str | None = None
+    gram_release_tx_hash: str | None = None
+    gram_pay: dict | None = None  # instructions de paiement (si en attente)
 
     # Champs d'affichage ajoutés par la route (pas des colonnes).
     listing_title: str | None = None

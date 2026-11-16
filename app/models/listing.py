@@ -69,6 +69,12 @@ class Listing(Base):
         default="XAF",
     )
 
+    # Adresse GRAM (TON) du vendeur : renseignée si currency == "GRAM".
+    seller_gram_address: Mapped[str | None] = mapped_column(
+        String(80),
+        nullable=True,
+    )
+
     # ========================================================
     # LISTING INFORMATION
     # ========================================================
