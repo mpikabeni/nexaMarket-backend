@@ -25,6 +25,7 @@ from app.models.listing_proof import ListingProof
 from app.models.review import Review
 from app.models.transaction import Transaction
 from app.models.user import User
+from app.services import gram_service, ton
 from app.services.media import channel_photo_url
 from app.services.notification_service import admin_chat_ids, notify_admins_listing
 from app.services.proofs import decode_proofs
@@ -423,8 +424,22 @@ async def create_listing(
         )
 
     currency = payload.currency.strip().upper()
+    gram_address = None
 
-    if currency not in settings.get_supported_currencies():
+    if currency == "GRAM":
+        # Annonce payée en GRAM (TON) : adresse du vendeur + prix minimal.
+        if not gram_service.enabled():
+            raise HTTPException(400, "Le paiement en GRAM n'est pas disponible pour le moment.")
+        if not ton.is_valid_address(payload.gram_address or ""):
+            raise HTTPException(
+                400,
+                "Adresse GRAM invalide : recopiez-la depuis votre portefeuille "
+                "(c'est là que vous recevrez le paiement).",
+            )
+        if payload.price < Decimal("1"):
+            raise HTTPException(400, "Le prix minimum en GRAM est de 1 GRAM.")
+        gram_address = payload.gram_address.strip()
+    elif currency not in settings.get_supported_currencies():
         raise HTTPException(400, "Devise non supportée.")
 
     existing = (
@@ -456,6 +471,7 @@ async def create_listing(
         description=payload.description,
         price=payload.price,
         currency=currency,
+        seller_gram_address=gram_address,
         status="pending_review",
         is_public=False,
         # Le taux appliqué est figé sur l'annonce à sa création.
@@ -537,10 +553,25 @@ async def update_listing(
     if "currency" in data and data["currency"] is not None:
         currency = data["currency"].strip().upper()
 
-        if currency not in settings.get_supported_currencies():
+        # Le moyen de paiement (XAF ou GRAM) ne change pas après la création :
+        # une annonce GRAM porte l'adresse du vendeur, pas une annonce XAF.
+        if (currency == "GRAM") != (listing.currency == "GRAM"):
+            raise HTTPException(
+                400,
+                "Le moyen de paiement ne peut pas être changé : créez une nouvelle annonce.",
+            )
+
+        if currency != "GRAM" and currency not in settings.get_supported_currencies():
             raise HTTPException(400, "Devise non supportée.")
 
         data["currency"] = currency
+
+    if (
+        listing.currency == "GRAM"
+        and data.get("price") is not None
+        and Decimal(str(data["price"])) < Decimal("1")
+    ):
+        raise HTTPException(400, "Le prix minimum en GRAM est de 1 GRAM.")
 
     for field in ("price", "currency", "title", "description", "category"):
         if field in data and data[field] is not None:

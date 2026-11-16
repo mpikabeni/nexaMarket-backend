@@ -15,6 +15,7 @@ from app.models.schemas import (
 )
 from app.models.transaction import Transaction
 from app.models.user import User
+from app.services import gram_service
 from app.services.transaction_service import TransactionService
 
 router = APIRouter(prefix="/transactions", tags=["transactions"])
@@ -118,6 +119,7 @@ async def _present(
                     "listing_title": titles.get(transaction.listing_id),
                     "buyer_name": names.get(transaction.buyer_id),
                     "seller_name": names.get(transaction.seller_id),
+                    "gram_pay": gram_service.payment_info(transaction),
                 }
             )
         )
@@ -150,6 +152,7 @@ async def create_transaction(
     transaction = await service.purchase(
         buyer_id=current_user.id,
         listing_id=payload.listing_id,
+        buyer_gram_address=payload.buyer_gram_address,
     )
 
     return await _one(transaction, db)

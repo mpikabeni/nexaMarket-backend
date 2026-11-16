@@ -22,7 +22,7 @@ from app.config import settings
 from app.deps import CurrentAdmin, DBSession
 from app.models.channel import Channel
 from app.models.listing import Listing
-from app.services import money_notifications
+from app.services import gram_service, money_notifications
 from app.services.notification_service import notify_user_id
 from app.models.message import Message
 from app.models.platform import PlatformWallet
@@ -1728,6 +1728,52 @@ async def remove_admin(
     await db.commit()
 
     return {"telegram_id": telegram_id, "is_admin": False}
+
+
+# ============================================================
+# GRAM À LIBÉRER / À REMBOURSER (paiement en GRAM, TON)
+# ============================================================
+
+class GramSentRequest(BaseModel):
+    tx_hash: str
+    # À n'utiliser que si la blockchain est injoignable : l'admin confirme
+    # l'envoi sans vérification automatique (tracé dans la transaction).
+    unverified: bool = False
+
+
+@router.get("/gram/tasks")
+async def gram_tasks(current_admin: CurrentAdmin, db: DBSession):
+    """GRAM à envoyer par l'administrateur (vendeurs ou remboursements)."""
+
+    return {
+        "enabled": gram_service.enabled(),
+        "address": settings.GRAM_RECEIVE_ADDRESS.strip() if gram_service.enabled() else None,
+        "tasks": await gram_service.list_tasks(db),
+    }
+
+
+@router.post("/gram/{transaction_id}/sent")
+async def gram_sent(
+    transaction_id: int,
+    payload: GramSentRequest,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """L'admin a envoyé les GRAM : on vérifie sur la blockchain puis on clôt."""
+
+    try:
+        transaction = await gram_service.mark_sent(
+            db,
+            transaction_id,
+            current_admin.id,
+            payload.tx_hash,
+            unverified=payload.unverified,
+        )
+    except gram_service.GramError as exc:
+        await db.rollback()
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    return {"id": transaction.id, "status": transaction.status, "escrow_held": transaction.escrow_held}
 
 
 # ============================================================

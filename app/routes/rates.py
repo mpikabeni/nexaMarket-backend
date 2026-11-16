@@ -18,6 +18,8 @@ import time
 import httpx
 from fastapi import APIRouter
 
+from app.services import gram_service
+
 router = APIRouter(prefix="/rates", tags=["Rates"])
 logger = logging.getLogger("nexmarket.rates")
 
@@ -81,4 +83,6 @@ async def get_rates():
         "usd_source": source,
         "updated_at": _cache["fetched"] or None,
         "indicative": True,
+        # Le paiement en GRAM est-il configuré (adresse de NexMarket valide) ?
+        "gram_enabled": gram_service.enabled(),
     }
