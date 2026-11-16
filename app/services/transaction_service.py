@@ -13,6 +13,7 @@ from app.models.platform import CommissionPayout, PlatformLedger, PlatformWallet
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.services.chat_service import open_transaction_chat
+from app.services import ton
 from app.services.notification_service import notify_user_id
 from app.services.wallet_service import (
     DuplicateOperationError,
@@ -130,6 +131,7 @@ class TransactionService:
         *,
         buyer_id: int,
         listing_id: int,
+        buyer_gram_address: str | None = None,
     ) -> Transaction:
 
         buyer = await self._get_user(buyer_id)
@@ -181,6 +183,31 @@ class TransactionService:
                 "Le montant vendeur est invalide."
             )
 
+        is_gram = currency == "GRAM"
+        gram_fields: dict = {}
+
+        if is_gram:
+            if not ton.is_valid_address(settings.GRAM_RECEIVE_ADDRESS):
+                raise TransactionServiceError(
+                    "Le paiement en GRAM n'est pas disponible pour le moment."
+                )
+            if not ton.is_valid_address(buyer_gram_address or ""):
+                raise TransactionServiceError(
+                    "Adresse GRAM de l'acheteur invalide : recopiez-la depuis "
+                    "votre portefeuille (elle sert au remboursement)."
+                )
+            if not ton.is_valid_address(listing.seller_gram_address or ""):
+                raise TransactionServiceError(
+                    "Cette annonce n'a pas d'adresse GRAM valide pour le vendeur."
+                )
+            gram_fields = dict(
+                payment_provider="gram",
+                payment_status="pending",
+                payment_reference=f"NMX-G-{uuid4().hex[:10].upper()}",
+                buyer_gram_address=buyer_gram_address.strip(),
+                seller_gram_address=listing.seller_gram_address.strip(),
+            )
+
         transaction = Transaction(
             reference=self._reference(),
             listing_id=listing.id,
@@ -195,6 +222,7 @@ class TransactionService:
             platform_fee_rate=fee_rate,
             status="pending_payment",
             escrow_held=False,
+            **gram_fields,
         )
 
         self.db.add(transaction)
@@ -333,6 +361,13 @@ class TransactionService:
     ) -> None:
         ref = transaction.reference
 
+        if (transaction.currency or "").upper() == "GRAM" and seller:
+            # En GRAM, c'est l'administrateur qui envoie le paiement.
+            seller = seller.replace(
+                "a été crédité sur votre portefeuille",
+                "sera envoyé sur votre adresse GRAM par l'administrateur",
+            )
+
         if buyer:
             await notify_user_id(
                 self.db, transaction.buyer_id, f"{buyer}\n\nRéférence : {ref}"
@@ -437,13 +472,22 @@ class TransactionService:
         *,
         buyer_id: int,
         listing_id: int,
+        buyer_gram_address: str | None = None,
     ) -> Transaction:
-        """Création de la transaction + blocage des fonds, en un geste."""
+        """Création de la transaction + blocage des fonds, en un geste.
+
+        Annonce en GRAM : on crée seulement la transaction ; le paiement est
+        constaté plus tard sur la blockchain (gram_service).
+        """
 
         transaction = await self.create_transaction(
             buyer_id=buyer_id,
             listing_id=listing_id,
+            buyer_gram_address=buyer_gram_address,
         )
+
+        if (transaction.currency or "").upper() == "GRAM":
+            return transaction
 
         try:
             return await self.pay_with_wallet(
@@ -479,6 +523,14 @@ class TransactionService:
         (prix - commission) et enregistre la commission NexMarket.
         Chaque mouvement a une référence unique : rejouable sans risque.
         """
+
+        if (transaction.currency or "").upper() == "GRAM":
+            # Rien ne bouge dans les wallets : les GRAM sont déjà chez
+            # NexMarket. On enregistre la commission ; l'administrateur
+            # envoie ensuite le montant au vendeur (escrow_held reste vrai
+            # jusqu'à cet envoi, constaté sur la blockchain).
+            await self._record_platform_fee(transaction)
+            return
 
         total = self._money(transaction.total_buyer_amount)
         seller_amount = self._money(transaction.seller_amount)
@@ -520,6 +572,12 @@ class TransactionService:
         """Rend les fonds bloqués à l'acheteur."""
 
         reference = f"{transaction.reference}-REFUND"
+
+        if (transaction.currency or "").upper() == "GRAM":
+            # Remboursement à la charge de l'administrateur (envoi GRAM à
+            # l'adresse de l'acheteur) : escrow_held reste vrai jusque-là.
+            transaction.refund_reference = reference
+            return
 
         try:
             await self.wallet.release_blocked(
@@ -872,21 +930,22 @@ class TransactionService:
         # La commission doit arriver sur le compte JessiKaPay de
         # NexMarket : on enregistre l'ordre de versement dans le MÊME
         # commit que la vente (la tâche de fond l'exécute ensuite).
-        self.db.add(
-            CommissionPayout(
-                transaction_id=transaction.id,
-                reference=f"NMX-COM-{transaction.reference}",
-                amount=fee,
-                currency=currency,
-                status="pending" if currency == "XAF" else "manual",
-                attempts=0,
-                failure_reason=(
-                    None
-                    if currency == "XAF"
-                    else f"Devise {currency} : versement à faire à la main."
-                ),
+        if currency != "GRAM":  # en GRAM, la commission reste dans le portefeuille de NexMarket
+            self.db.add(
+                CommissionPayout(
+                    transaction_id=transaction.id,
+                    reference=f"NMX-COM-{transaction.reference}",
+                    amount=fee,
+                    currency=currency,
+                    status="pending" if currency == "XAF" else "manual",
+                    attempts=0,
+                    failure_reason=(
+                        None
+                        if currency == "XAF"
+                        else f"Devise {currency} : versement à faire à la main."
+                    ),
+                )
             )
-        )
 
         transaction.nexmarket_fee_recorded_at = (
             self._now()
