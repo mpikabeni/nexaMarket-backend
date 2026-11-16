@@ -118,3 +118,13 @@ Configuration (Render) : GRAM_RECEIVE_ADDRESS = adresse du portefeuille NexMarke
 (copiée depuis l'app « Argent »). Optionnel : TON_API_KEY, TON_API_BASE.
 Vide ou invalide = paiement GRAM désactivé (erreur claire dans les logs).
 Nouvelles colonnes ajoutées automatiquement au démarrage (MIGRATION_v20.sql).
+
+- **Retraits : jamais « terminé » sans confirmation de JessiKaPay.** Une réponse
+  sans `success: true` / `transaction_id` laisse le retrait « à vérifier »
+  (fonds bloqués, admin alerté) ; `success: false` = refus (fonds rendus).
+- **Webhook JessiKaPay** `POST /api/webhooks/jessikapay` (signature HMAC vérifiée) :
+  `credit.completed` termine un retrait « à vérifier » ; `deposit.completed`
+  déclenche la vérification du dépôt (le crédit reste conditionné à la
+  vérification auprès de JessiKaPay). À activer en donnant cette URL HTTPS
+  (https://VOTRE-SERVICE.onrender.com/api/webhooks/jessikapay) comme `webhook_url`
+  de l'application JessiKaPay.
