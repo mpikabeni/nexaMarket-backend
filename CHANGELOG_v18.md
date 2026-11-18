@@ -170,3 +170,24 @@ passe ni code visible). Le déclencheur est côté serveur (détection de « c'e
 - L'assistant NE VOIT PAS l'image : il remercie, alerte l'administrateur et ne confirme
   jamais le transfert. L'administrateur vérifie la capture puis marque le transfert
   terminé.
+
+# v27 — Capture de l'acheteur + diffusion admin avec photo
+
+**Acheteur** : comme le vendeur, il envoie une capture d'écran du canal où il apparaît
+comme « Propriétaire ». L'assistant la demande (à l'annonce du vendeur, en période de
+protection, ou si l'acheteur dit « j'ai reçu le canal »), remercie, alerte l'administrateur
+et NE confirme jamais la réception à sa place. L'image est relayée à l'admin et au vendeur.
+
+**Admins** : /broadcast accepte une PHOTO avec légende (en plus du texte). Le message est
+copié tel quel (copy_message) : mise en forme conservée (gras, italique, liens, spoilers).
+Limite Telegram : les emojis animés Premium ne sont affichés que si le bot y est autorisé
+(sinon l'emoji normal s'affiche). En discussion de transaction, l'admin peut aussi envoyer
+des photos (relayées à l'acheteur et au vendeur).
+Correctif : un message de diffusion n'est plus aussi posté dans une discussion ouverte.
+
+
+**Nouvelle annonce** : quand l'admin approuve une annonce pour la première fois, TOUS les
+membres actifs du bot (sauf le vendeur) reçoivent « Nouveau canal à vendre » : nom, catégorie,
+abonnés, prix et un bouton qui ouvre NexMarket. Envoi en tâche de fond (≈ 20 messages/s,
+l'admin n'attend pas). Une annonce modifiée puis ré-approuvée ne re-notifie pas.
+Désactivable : NOTIFY_NEW_LISTINGS=false.
