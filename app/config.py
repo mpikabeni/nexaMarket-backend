@@ -76,11 +76,12 @@ class Settings(BaseSettings):
     # ========================================================
 
     # ========================================================
-    # ASSISTANT IA des transactions (Claude). Vide = assistant désactivé.
+    # ASSISTANT IA des transactions (Mistral AI, offre gratuite « Experiment »).
+    # Clé à créer sur https://console.mistral.ai . Vide = assistant désactivé.
     # ========================================================
 
-    ANTHROPIC_API_KEY: str = ""
-    ASSISTANT_MODEL: str = "claude-sonnet-5-5"
+    MISTRAL_API_KEY: str = ""
+    ASSISTANT_MODEL: str = "mistral-small-latest"
 
     GRAM_RECEIVE_ADDRESS: str = ""
     TON_API_BASE: str = "https://toncenter.com/api/v3"
