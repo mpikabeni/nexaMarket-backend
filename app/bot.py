@@ -1621,6 +1621,51 @@ async def stop_command(
     )
 
 
+async def approve_transfer_callback(query) -> None:
+    """Bouton « ✅ Autoriser le transfert » : l'ACCORD de l'administrateur.
+
+    Seul un administrateur peut cliquer ; c'est lui (jamais l'assistant IA) qui
+    fait passer la transaction à « transfert commencé ».
+    """
+
+    try:
+        transaction_id = int(query.data.split(":", 1)[1])
+    except (ValueError, IndexError):
+        return
+
+    if not await is_admin_user(query.from_user.id):
+        await query.message.reply_text("⛔ Réservé aux administrateurs.")
+        return
+
+    from app.services.transaction_service import (
+        TransactionService,
+        TransactionServiceError,
+    )
+
+    async with AsyncSessionLocal() as db:
+        try:
+            transaction = await TransactionService(db).start_transfer(transaction_id)
+        except TransactionServiceError as exc:
+            await query.message.reply_text(f"❌ {exc}")
+            return
+
+        if not transaction.assigned_admin_id:
+            admin = (
+                await db.execute(
+                    select(User).where(User.telegram_id == query.from_user.id)
+                )
+            ).scalar_one_or_none()
+            if admin:
+                transaction.assigned_admin_id = admin.id
+                await db.commit()
+
+    await query.message.reply_text(
+        f"✅ Transfert autorisé pour la transaction #{transaction_id}. "
+        "L'assistant guide maintenant le vendeur ; marquez le transfert comme "
+        "terminé depuis la console quand vous l'avez constaté."
+    )
+
+
 async def open_chat_callback(query, context) -> None:
 
     try:
@@ -1733,6 +1778,11 @@ async def callback_handler(
         return
 
     await query.answer()
+
+    if query.data and query.data.startswith("assist_ok:"):
+        if query.from_user:
+            await approve_transfer_callback(query)
+        return
 
     if query.data and query.data.startswith("chat:"):
         if query.from_user:

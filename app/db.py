@@ -172,6 +172,8 @@ SCHEMA_PATCHES = [
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gram_tx_hash VARCHAR(120)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gram_release_tx_hash VARCHAR(120)",
     "CREATE INDEX IF NOT EXISTS ix_transactions_gram_tx_hash ON transactions (gram_tx_hash)",
+    # Aperçus visibles par les acheteurs (v21)
+    "ALTER TABLE listing_proofs ADD COLUMN IF NOT EXISTS kind VARCHAR(12) NOT NULL DEFAULT 'proof'",
 ]
 
 

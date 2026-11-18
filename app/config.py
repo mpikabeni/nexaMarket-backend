@@ -75,6 +75,13 @@ class Settings(BaseSettings):
     # depuis l'app Telegram « Argent »). Vide = paiement GRAM désactivé.
     # ========================================================
 
+    # ========================================================
+    # ASSISTANT IA des transactions (Claude). Vide = assistant désactivé.
+    # ========================================================
+
+    ANTHROPIC_API_KEY: str = ""
+    ASSISTANT_MODEL: str = "claude-sonnet-5-5"
+
     GRAM_RECEIVE_ADDRESS: str = ""
     TON_API_BASE: str = "https://toncenter.com/api/v3"
     TON_API_KEY: str = ""
