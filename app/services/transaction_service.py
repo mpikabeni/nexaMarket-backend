@@ -302,6 +302,7 @@ class TransactionService:
             buyer="🔄 Le transfert du canal a commencé.",
             seller="🔄 Le transfert du canal a commencé.",
         )
+        self._assistant_status(transaction.id, "transfer_started")
 
         return transaction
 
@@ -345,12 +346,24 @@ class TransactionService:
             buyer="🛡️ Transfert terminé. Vérifiez le canal : vous pouvez confirmer la réception ou ouvrir un litige pendant la période de protection.",
             seller="🛡️ Transfert terminé. Vos fonds seront versés à la fin de la période de protection.",
         )
+        self._assistant_status(transaction.id, "protection_period")
 
         return transaction
 
     # ============================================================
     # NOTIFICATIONS TELEGRAM (acheteur / vendeur)
     # ============================================================
+
+    @staticmethod
+    def _assistant_status(transaction_id: int, status: str) -> None:
+        """Prévient l'assistant IA (en arrière-plan, sans jamais bloquer)."""
+
+        try:
+            from app.services import assistant_service
+
+            assistant_service.on_status(transaction_id, status)
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _notify(
         self,
@@ -1008,6 +1021,7 @@ class TransactionService:
             buyer="⚠️ Un litige a été ouvert. Un administrateur va examiner la situation.",
             seller="⚠️ Un litige a été ouvert. Un administrateur va examiner la situation.",
         )
+        self._assistant_status(transaction.id, "disputed")
 
         return transaction
 

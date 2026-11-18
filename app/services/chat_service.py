@@ -31,6 +31,7 @@ ROLE_LABELS = {
     "seller": "Vendeur",
     "admin": "Admin NexMarket",
     "system": "NexMarket",
+    "assistant": "Assistant IA NexMarket",
 }
 
 MAX_LENGTH = 5000
@@ -165,6 +166,65 @@ async def post_message(
     except Exception as exc:  # noqa: BLE001
         # Le message est enregistré : un relais raté ne doit rien casser.
         logger.warning("Relais du message %s impossible : %s", message.id, exc)
+
+    # L'assistant IA répond aux messages de l'acheteur et du vendeur.
+    if role in ("buyer", "seller"):
+        try:
+            from app.services import assistant_service
+
+            assistant_service.on_user_message(transaction.id, message.id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Assistant indisponible : %s", exc)
+
+    return message
+
+
+async def post_assistant_message(
+    db: AsyncSession,
+    transaction: Transaction,
+    content: str,
+) -> Message:
+    """Message de l'assistant IA : enregistré puis relayé à l'acheteur et au vendeur."""
+
+    buyer_telegram_id = (
+        await db.execute(
+            select(User.telegram_id).where(User.id == transaction.buyer_id)
+        )
+    ).scalar_one_or_none()
+
+    message = Message(
+        transaction_id=transaction.id,
+        # Les messages automatiques sont rattachés à l'acheteur (clé étrangère
+        # obligatoire) ; le rôle « assistant » les distingue partout.
+        sender_id=transaction.buyer_id,
+        sender_telegram_id=buyer_telegram_id or 0,
+        sender_role="assistant",
+        content=content,
+        message_type="text",
+        is_system_message=False,
+        is_read=False,
+    )
+    db.add(message)
+    await db.commit()
+    await db.refresh(message)
+
+    text = (
+        f"🤖 Assistant IA NexMarket — Discussion #{transaction.id} · "
+        f"{transaction.reference}\n\n{content}"
+    )
+    for user_id in (transaction.buyer_id, transaction.seller_id):
+        telegram_id = (
+            await db.execute(select(User.telegram_id).where(User.id == user_id))
+        ).scalar_one_or_none()
+        if telegram_id:
+            try:
+                notify_telegram(
+                    int(telegram_id),
+                    text,
+                    chat_markup(transaction.id, for_admin=False),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("Relais assistant impossible : %s", exc)
 
     return message
 
@@ -315,3 +375,11 @@ async def open_transaction_chat(
             admin_text,
             chat_markup(transaction.id, for_admin=True),
         )
+
+    # L'assistant IA ouvre la discussion (supervisé par l'administrateur).
+    try:
+        from app.services import assistant_service
+
+        assistant_service.on_chat_opened(transaction.id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Assistant indisponible : %s", exc)

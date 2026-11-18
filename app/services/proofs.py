@@ -61,3 +61,45 @@ def decode_proofs(images: list[str]) -> list[tuple[str, bytes]]:
         result.append((content_type, data))
 
     return result
+
+
+MAX_PREVIEWS = 6
+
+
+def decode_previews(images: list[str], *, required: bool) -> list[tuple[str, bytes]]:
+    """Aperçus du canal visibles par les acheteurs (obligatoires si le canal est privé)."""
+
+    if not images:
+        if required:
+            raise ValueError(
+                "Canal privé : ajoute au moins une photo d'aperçu "
+                "(captures du contenu du canal) que les acheteurs pourront voir."
+            )
+        return []
+
+    if len(images) > MAX_PREVIEWS:
+        raise ValueError(f"Maximum {MAX_PREVIEWS} photos d'aperçu.")
+
+    result: list[tuple[str, bytes]] = []
+
+    for index, raw in enumerate(images, start=1):
+        payload = raw.split(",", 1)[1] if raw.startswith("data:") and "," in raw else raw
+
+        try:
+            data = base64.b64decode(payload, validate=True)
+        except (binascii.Error, ValueError):
+            raise ValueError(f"La photo d'aperçu {index} n'est pas une image valide.")
+
+        if len(data) > MAX_PROOF_BYTES:
+            raise ValueError(f"La photo d'aperçu {index} est trop lourde.")
+
+        content_type = _detect_type(data)
+
+        if content_type is None:
+            raise ValueError(
+                f"La photo d'aperçu {index} doit être au format JPEG, PNG ou WebP."
+            )
+
+        result.append((content_type, data))
+
+    return result
