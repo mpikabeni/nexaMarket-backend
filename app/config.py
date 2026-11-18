@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     #   Gemini  : https://aistudio.google.com/apikey
     # ========================================================
 
+    # Prévenir TOUS les membres du bot quand une nouvelle annonce est publiée
+    # (première publication seulement). Mettre à false pour couper.
+    NOTIFY_NEW_LISTINGS: bool = True
+
     GROQ_API_KEY: str = ""
     GEMINI_API_KEY: str = ""
 

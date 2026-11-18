@@ -16,7 +16,7 @@ from telegram import (
     WebAppInfo,
 )
 from telegram.constants import ChatMemberStatus, ChatType, ParseMode
-from telegram.error import TelegramError
+from telegram.error import BadRequest, TelegramError
 from telegram.ext import (
     Application,
     ApplicationHandlerStop,
@@ -1432,8 +1432,11 @@ async def broadcast_command(
 
     await update.message.reply_text(
         "📢 <b>Diffusion NexMarket</b>\n\n"
-        "Envoie maintenant le message que tu veux "
-        "envoyer aux utilisateurs actifs.\n\n"
+        "Envoie maintenant le message que tu veux envoyer aux "
+        "utilisateurs actifs : un texte, ou une <b>photo avec sa légende</b>.\n"
+        "La mise en forme (gras, italique, liens) est conservée. Les emojis "
+        "animés Premium peuvent s'afficher comme des emojis normaux : "
+        "c'est une limite de Telegram pour les bots.\n\n"
         "❌ Pour annuler : /cancel",
         parse_mode=ParseMode.HTML,
     )
@@ -1461,6 +1464,35 @@ async def cancel_command(
 # ============================================================
 # BROADCAST MESSAGE
 # ============================================================
+
+async def _broadcast_one(bot, telegram_id: int, source) -> None:
+    """Envoie le message de l'admin (texte OU photo + légende) à un utilisateur.
+
+    copy_message conserve la photo et la mise en forme (gras, italique, liens,
+    spoilers). Si Telegram refuse la copie (BadRequest : ex. emoji Premium non
+    autorisé pour un bot), on renvoie une version simple : photo + texte brut.
+    Les autres erreurs (utilisateur ayant bloqué le bot...) remontent : échec compté.
+    """
+
+    try:
+        await bot.copy_message(
+            chat_id=telegram_id,
+            from_chat_id=source.chat_id,
+            message_id=source.message_id,
+        )
+    except BadRequest:
+        if source.photo:
+            await bot.send_photo(
+                chat_id=telegram_id,
+                photo=source.photo[-1].file_id,
+                caption=(source.caption or "")[:1000] or None,
+            )
+        else:
+            await bot.send_message(
+                chat_id=telegram_id,
+                text=source.text or source.caption,
+            )
+
 
 async def broadcast_message_handler(
     update: Update,
@@ -1493,12 +1525,14 @@ async def broadcast_message_handler(
         None,
     )
 
-    message = update.message.text
+    source = update.message
+    message = source.text or source.caption
+    has_photo = bool(source.photo)
 
-    if not message:
+    if not message and not has_photo:
 
         await update.message.reply_text(
-            "❌ Le message texte est vide."
+            "❌ Le message est vide."
         )
 
         return
@@ -1534,10 +1568,7 @@ async def broadcast_message_handler(
 
         try:
 
-            await context.bot.send_message(
-                chat_id=telegram_id,
-                text=message,
-            )
+            await _broadcast_one(context.bot, telegram_id, source)
 
             sent += 1
 
@@ -1559,6 +1590,10 @@ async def broadcast_message_handler(
         f"❌ Échecs : <b>{failed}</b>",
         parse_mode=ParseMode.HTML,
     )
+
+    # Le message de diffusion ne doit PAS aussi partir dans une discussion de
+    # transaction ouverte par l'admin (groupe suivant).
+    raise ApplicationHandlerStop
 
 
 
@@ -2130,7 +2165,7 @@ def build_application() -> Application:
 
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND,
+            (filters.TEXT & ~filters.COMMAND) | filters.PHOTO,
             broadcast_message_handler,
         )
     )
