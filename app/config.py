@@ -76,12 +76,20 @@ class Settings(BaseSettings):
     # ========================================================
 
     # ========================================================
-    # ASSISTANT IA des transactions (Mistral AI, offre gratuite « Experiment »).
-    # Clé à créer sur https://console.mistral.ai . Vide = assistant désactivé.
+    # ASSISTANT IA des transactions : 2 fournisseurs GRATUITS en cascade.
+    # L'assistant essaie d'abord le 1er de ASSISTANT_PROVIDERS qui a une clé ;
+    # s'il est en panne ou limité (429), il passe automatiquement au suivant.
+    # Aucune clé = assistant désactivé. Une seule clé suffit.
+    #   Groq    : https://console.groq.com/keys
+    #   Gemini  : https://aistudio.google.com/apikey
     # ========================================================
 
-    MISTRAL_API_KEY: str = ""
-    ASSISTANT_MODEL: str = "mistral-small-latest"
+    GROQ_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+
+    ASSISTANT_PROVIDERS: str = "groq,gemini"
+    GROQ_MODEL: str = "llama-3.3-70b-versatile"
+    GEMINI_MODEL: str = "gemini-2.5-flash"
 
     GRAM_RECEIVE_ADDRESS: str = ""
     TON_API_BASE: str = "https://toncenter.com/api/v3"

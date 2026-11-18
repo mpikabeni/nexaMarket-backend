@@ -1701,7 +1701,21 @@ async def chat_message_handler(
 
     message = update.message
 
-    if not message or not message.text or not update.effective_user:
+    if not message or not update.effective_user:
+        return
+
+    # Capture d'écran / image envoyée dans la discussion (ex. preuve du transfert du canal).
+    attachment_file_id = None
+    attachment_type = "text"
+
+    if message.photo:
+        attachment_file_id = message.photo[-1].file_id  # la plus grande taille
+        attachment_type = "image"
+    elif message.document and (message.document.mime_type or "").startswith("image/"):
+        attachment_file_id = message.document.file_id
+        attachment_type = "document"
+
+    if attachment_file_id is None and not message.text:
         return
 
     if context.user_data.get("waiting_broadcast"):
@@ -1725,7 +1739,11 @@ async def chat_message_handler(
     if not transaction_id:
         return
 
-    text = message.text.strip()
+    text = (message.text or message.caption or "").strip()
+
+    if attachment_file_id is not None and not text:
+        # Texte visible dans la discussion (et lu par l'assistant, qui ne voit pas l'image).
+        text = "📷 Capture d'écran envoyée."
 
     if not text:
         return
@@ -1757,11 +1775,20 @@ async def chat_message_handler(
             await db.execute(select(User).where(User.id == user.id))
         ).scalar_one()
 
-        await post_message(db, tx, sender, text)
+        await post_message(
+            db,
+            tx,
+            sender,
+            text,
+            message_type=attachment_type,
+            attachment_file_id=attachment_file_id,
+        )
 
     context.user_data["chat_tx"] = int(transaction_id)
 
-    await message.reply_text("✅ Message envoyé.")
+    await message.reply_text(
+        "✅ Capture envoyée." if attachment_file_id else "✅ Message envoyé."
+    )
 
 # ============================================================
 # CALLBACKS
@@ -2122,7 +2149,12 @@ def build_application() -> Application:
     # Groupe 1 : s'exécute en plus du handler de diffusion (groupe 0).
     application.add_handler(
         MessageHandler(
-            filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+            (
+                (filters.TEXT & ~filters.COMMAND)
+                | filters.PHOTO
+                | filters.Document.IMAGE
+            )
+            & filters.ChatType.PRIVATE,
             chat_message_handler,
         ),
         group=1,
