@@ -56,6 +56,47 @@ def notify_telegram(
     task.add_done_callback(_background_tasks.discard)
 
 
+async def _send_attachment(telegram_id: int, file_id: str, kind: str, caption: str, reply_markup=None) -> None:
+    """Renvoie une photo / un fichier image déjà connu de Telegram (file_id du même bot)."""
+
+    try:
+        bot = get_telegram_service().bot
+        if kind == "document":
+            coro = bot.send_document(
+                chat_id=telegram_id, document=file_id, caption=caption[:1000], reply_markup=reply_markup
+            )
+        else:
+            coro = bot.send_photo(
+                chat_id=telegram_id, photo=file_id, caption=caption[:1000], reply_markup=reply_markup
+            )
+        await asyncio.wait_for(coro, timeout=20)
+    except Exception as exc:
+        logger.warning("Pièce jointe non envoyée (%s) : %s", telegram_id, exc)
+
+
+def notify_telegram_attachment(
+    telegram_id: int | None,
+    file_id: str,
+    kind: str,
+    caption: str,
+    reply_markup=None,
+) -> None:
+    """Envoi non bloquant d'une capture d'écran (best effort)."""
+
+    if not telegram_id or not file_id:
+        return
+
+    try:
+        task = asyncio.get_running_loop().create_task(
+            _send_attachment(telegram_id, file_id, kind, caption, reply_markup)
+        )
+    except RuntimeError:
+        return
+
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 async def notify_user_id(
     db,
     user_id: int | None,

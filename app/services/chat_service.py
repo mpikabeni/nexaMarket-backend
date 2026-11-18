@@ -22,6 +22,7 @@ from app.models.user import User
 from app.services.notification_service import (
     admin_chat_ids,
     notify_telegram,
+    notify_telegram_attachment,
 )
 
 logger = logging.getLogger("nexmarket.chat")
@@ -267,12 +268,17 @@ async def relay_message(
 
     targets.pop(int(sender.telegram_id), None)
 
+    has_attachment = bool(message.attachment_file_id) and message.message_type in ("image", "document")
+
     for telegram_id, is_admin in targets.items():
-        notify_telegram(
-            telegram_id,
-            text,
-            chat_markup(transaction.id, for_admin=is_admin),
-        )
+        markup = chat_markup(transaction.id, for_admin=is_admin)
+        if has_attachment:
+            # Capture d'écran : renvoyée telle quelle (l'admin la vérifie, l'IA ne la voit pas).
+            notify_telegram_attachment(
+                telegram_id, message.attachment_file_id, message.message_type, text, markup
+            )
+        else:
+            notify_telegram(telegram_id, text, markup)
 
 
 async def open_transaction_chat(

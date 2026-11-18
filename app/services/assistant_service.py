@@ -1,4 +1,4 @@
-"""Assistant IA des transactions (Mistral) : orchestration.
+"""Assistant IA des transactions (Groq / Gemini, gratuits) : orchestration.
 
 Quand une transaction démarre (fonds bloqués), l'assistant prend la parole dans
 la discussion acheteur / vendeur / admin, guide chacun pour le transfert du canal
@@ -37,15 +37,26 @@ logger = logging.getLogger("nexmarket.assistant")
 
 ACTIVE_STATUSES = ("waiting_admin", "transfer_started", "protection_period", "disputed")
 MAX_REPLIES_PER_TRANSACTION = 60
-API_URL = "https://api.mistral.ai/v1/chat/completions"
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
 
 _tasks: set[asyncio.Task] = set()
 _locks: dict[int, asyncio.Lock] = {}
 _last_alert: dict[int, tuple[str, float]] = {}
 
 
+def _providers() -> list[str]:
+    """Fournisseurs à essayer, dans l'ordre voulu, ceux qui ont une clé seulement."""
+    keys = {
+        "groq": settings.GROQ_API_KEY,
+        "gemini": settings.GEMINI_API_KEY,
+    }
+    order = [n.strip().lower() for n in (settings.ASSISTANT_PROVIDERS or "").split(",") if n.strip()]
+    return [n for n in order if n in keys and (keys[n] or "").strip()]
+
+
 def enabled() -> bool:
-    return bool((settings.MISTRAL_API_KEY or "").strip())
+    return bool(_providers())
 
 
 def _schedule(coro) -> None:
@@ -82,44 +93,91 @@ def on_status(transaction_id: int, status: str) -> None:
     ))
 
 
+async def _chat_openai_compat(client: httpx.AsyncClient, url: str, key: str, model: str,
+                              system: str, user_prompt: str) -> str:
+    """Groq (format OpenAI chat/completions), clé en « Bearer »."""
+    response = await client.post(
+        url,
+        headers={"Authorization": f"Bearer {key.strip()}", "Content-Type": "application/json"},
+        json={
+            "model": model,
+            "max_tokens": 700,
+            "temperature": 0.3,
+            "response_format": {"type": "json_object"},
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ],
+        },
+    )
+    response.raise_for_status()
+    content = response.json()["choices"][0]["message"]["content"]
+    if isinstance(content, list):
+        content = "".join(b.get("text", "") for b in content if isinstance(b, dict))
+    return content or ""
+
+
+async def _chat_gemini(client: httpx.AsyncClient, key: str, model: str,
+                       system: str, user_prompt: str) -> str:
+    # La clé passe dans l'en-tête (pas dans l'URL) pour ne jamais apparaître dans les logs.
+    response = await client.post(
+        GEMINI_URL.format(model=model.strip()),
+        headers={"x-goog-api-key": key.strip(), "Content-Type": "application/json"},
+        json={
+            "systemInstruction": {"parts": [{"text": system}]},
+            "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+            "generationConfig": {
+                "temperature": 0.3,
+                # Marge large : la « réflexion » de certains modèles Gemini consomme ce plafond.
+                "maxOutputTokens": 2048,
+                "responseMimeType": "application/json",
+            },
+        },
+    )
+    response.raise_for_status()
+    candidates = response.json().get("candidates") or []
+    if not candidates:  # requête bloquée par les filtres de Gemini
+        return ""
+    parts = (candidates[0].get("content") or {}).get("parts") or []
+    return "".join(
+        part.get("text", "") for part in parts if isinstance(part, dict) and not part.get("thought")
+    )
+
+
 async def _call_llm(system: str, user_prompt: str) -> str:
-    headers = {
-        "Authorization": f"Bearer {settings.MISTRAL_API_KEY.strip()}",
-        "Content-Type": "application/json",
-        "Accept": "application/json",
-    }
-    body = {
-        "model": settings.ASSISTANT_MODEL,
-        "max_tokens": 700,
-        "temperature": 0.3,
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
+    """Essaie les fournisseurs gratuits à la suite : le premier qui répond gagne.
+
+    Erreur, limite de débit (429), clé invalide ou réponse vide : on passe au suivant.
+    Si tous échouent, une 2e passe est tentée après une courte pause.
+    """
+
+    providers = _providers()
+    if not providers:
+        raise RuntimeError("Aucune clé IA configurée (GROQ_API_KEY ou GEMINI_API_KEY).")
+
     last_error: Exception | None = None
-    async with httpx.AsyncClient(timeout=45.0) as client:
-        for attempt in range(2):
-            try:
-                response = await client.post(API_URL, json=body, headers=headers)
-                if response.status_code in (429, 500, 502, 503, 529) and attempt == 0:
-                    # L'offre gratuite Mistral limite le débit : on attend un peu avant de réessayer.
-                    await asyncio.sleep(3)
-                    continue
-                response.raise_for_status()
-                data = response.json()
-                content = data["choices"][0]["message"]["content"]
-                if isinstance(content, list):  # certains modèles renvoient des blocs
-                    content = "".join(
-                        block.get("text", "") for block in content if isinstance(block, dict)
-                    )
-                return content or ""
-            except (httpx.HTTPError, KeyError, IndexError, TypeError) as exc:
-                last_error = exc
-                if attempt == 0:
-                    await asyncio.sleep(3)
-    raise RuntimeError(f"Appel à l'assistant impossible : {last_error}")
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        for round_number in range(2):
+            for name in providers:
+                try:
+                    if name == "groq":
+                        text = await _chat_openai_compat(
+                            client, GROQ_URL, settings.GROQ_API_KEY, settings.GROQ_MODEL, system, user_prompt)
+                    else:
+                        text = await _chat_gemini(
+                            client, settings.GEMINI_API_KEY, settings.GEMINI_MODEL, system, user_prompt)
+                    if not (text or "").strip():
+                        raise RuntimeError("réponse vide")
+                    logger.info("Assistant : réponse fournie par %s", name)
+                    return text
+                except (httpx.HTTPError, KeyError, IndexError, ValueError, TypeError, RuntimeError) as exc:
+                    # On ne journalise que le type d'erreur / le code HTTP (jamais la clé ni l'URL complète).
+                    status = getattr(getattr(exc, "response", None), "status_code", None)
+                    logger.warning("Assistant : %s indisponible (%s)", name, status or type(exc).__name__)
+                    last_error = exc
+            if round_number == 0:
+                await asyncio.sleep(4)
+    raise RuntimeError(f"Appel à l'assistant impossible : {type(last_error).__name__ if last_error else 'inconnu'}")
 
 
 async def _converse(transaction_id: int, trigger: str, trigger_message_id: int | None) -> None:
@@ -147,6 +205,17 @@ async def _converse(transaction_id: int, trigger: str, trigger_message_id: int |
 
                 if trigger_message_id and (not rows or rows[-1].id != trigger_message_id):
                     return  # un message plus récent déclenchera la réponse
+
+                # Le vendeur dit avoir transféré le canal : l'assistant DOIT demander une capture
+                # d'écran (déclencheur côté serveur : on ne laisse pas cela au hasard du modèle).
+                last = rows[-1] if rows else None
+                if transaction.status == "transfer_started" and last is not None and last.sender_role == "seller":
+                    if last.attachment_file_id and last.message_type in ("image", "document"):
+                        trigger = logic.TRIGGER_SCREENSHOT_RECEIVED
+                    elif logic.claims_transfer_done(last.content or "") and not any(
+                        m.sender_role == "seller" and m.attachment_file_id for m in rows
+                    ):
+                        trigger = logic.TRIGGER_ASK_SCREENSHOT
 
                 sent = (
                     await db.scalar(

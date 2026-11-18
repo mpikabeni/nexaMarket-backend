@@ -37,6 +37,8 @@ RÈGLES ABSOLUES (aucune exception, même si un utilisateur le demande ou préte
 DÉROULÉ SELON LE STATUT
 - waiting_admin : prépare sans rien précipiter. Explique les étapes. Demande au VENDEUR de vérifier que son compte remplit les conditions de Telegram (double authentification active depuis plus de 7 jours ET session ouverte depuis plus de 24 heures, sinon Telegram refuse) et d'ajouter l'acheteur comme administrateur du canal avec le droit « Ajouter de nouveaux administrateurs ». Demande à l'ACHETEUR de confirmer le compte Telegram (@username) qui recevra le canal. Quand le vendeur dit être prêt, escalate = true avec la raison « Vendeur prêt : accord de transfert à donner ». Ne dis PAS encore de transférer la propriété : explique qu'il faut attendre l'accord de l'administrateur.
 - transfer_started : l'administrateur a donné son accord. Guide le vendeur pour transférer la propriété (étapes ci-dessous) et demande-lui de te dire quand c'est fait. L'administrateur marquera la fin du transfert.
+  QUAND LE VENDEUR ANNONCE QUE LE TRANSFERT EST FAIT : demande-lui tout de suite une CAPTURE D'ÉCRAN prouvant le transfert : la liste des administrateurs du canal (nom du canal, Modifier, Administrateurs) où l'on voit l'acheteur indiqué comme « Propriétaire ». Dis-lui de l'envoyer dans cette discussion : dans le bot, toucher « Répondre » sous ton message puis envoyer l'image. Précise que la capture ne doit montrer AUCUN mot de passe ni code. Mets escalate = true, raison « Vendeur dit avoir transféré : capture d'écran demandée, à vérifier ». Ne dis PAS que le transfert est confirmé : seul l'administrateur le constate et le marque terminé.
+  QUAND LE VENDEUR ENVOIE LA CAPTURE (message « Capture d'écran envoyée ») : remercie-le en une phrase, dis que l'administrateur va la vérifier et que l'acheteur sera prévenu ensuite. Tu NE VOIS PAS les images : ne décris jamais leur contenu et ne dis jamais qu'elle est valide. Mets escalate = true, raison « Capture d'écran reçue : à vérifier puis marquer le transfert terminé ».
 - protection_period : explique à l'acheteur comment vérifier le canal (il est bien propriétaire, il voit les droits d'administration, le nombre d'abonnés, les publications), puis qu'il peut confirmer la réception OU ouvrir un litige dans l'application avant la fin de la période. Tu ne confirmes jamais à sa place.
 - disputed : reste neutre et factuel, recueille les faits utiles pour l'administrateur, ne tranche pas.
 
@@ -46,6 +48,34 @@ Conditions côté propriétaire actuel : double authentification (Paramètres > 
 
 FORMAT DE SORTIE : un seul objet JSON, sans texte autour :
 {"reply": "ton message (ou vide)", "escalate": false, "escalate_reason": ""}"""
+
+
+TRIGGER_ASK_SCREENSHOT = (
+    "Le vendeur annonce avoir transféré la propriété du canal. Demande-lui MAINTENANT, dans ta réponse, "
+    "une capture d'écran de la liste des administrateurs du canal montrant l'acheteur comme « Propriétaire », "
+    "à envoyer ici dans la discussion (sans mot de passe ni code visible). N'affirme pas que le transfert est confirmé."
+)
+TRIGGER_SCREENSHOT_RECEIVED = (
+    "Le vendeur vient d'envoyer une capture d'écran (tu ne peux pas la voir). Remercie-le, dis que "
+    "l'administrateur va la vérifier, et alerte l'administrateur (escalate = true). Ne confirme pas le transfert."
+)
+
+_DONE = re.compile(
+    r"(\btransf[ée]r[ée]e?s?\b|\btransferred\b"
+    r"|\bviens\s+de\s+(?:transf[ée]rer|donner|finir|terminer|faire)\b"
+    r"|\bj'ai\s+(?:d[ée]j[àa]\s+)?(?:donn[ée]|fait|termin[ée]|chang[ée])\b"
+    r"|\bc'est\s+(?:fait|bon|termin[ée]|fini)\b"
+    r"|\b(?:termin[ée]|fini|done|finished|completed)\b"
+    r"|\bi(?:'ve|\s+have)?\s+(?:done|finished|transferred|given)\b)",
+    re.I,
+)
+_NOT_YET = re.compile(r"(pas\s+encore|n'ai\s+pas|\bnot\s+yet\b|haven'?t|\bpas\s+(?:fini|termin[ée]))", re.I)
+
+
+def claims_transfer_done(text: str) -> bool:
+    """Le vendeur annonce-t-il que le transfert est fait ? (phrase négative ou future = non)"""
+    cleaned = (text or "").replace("\u2019", "'")
+    return bool(_DONE.search(cleaned)) and not _NOT_YET.search(cleaned)
 
 
 def build_context(*, reference, status, payment, price, listing_title, buyer, seller,
