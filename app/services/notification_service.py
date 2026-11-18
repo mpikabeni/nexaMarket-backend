@@ -97,6 +97,139 @@ def notify_telegram_attachment(
     task.add_done_callback(_background_tasks.discard)
 
 
+# ============================================================
+# NOUVELLE ANNONCE : prévenir tous les membres du bot
+# ============================================================
+
+def build_new_listing_text(listing, channel) -> str:
+    """Texte brut (sans parse_mode : le titre du vendeur ne peut rien casser)."""
+
+    title = (getattr(channel, "title", None) or getattr(listing, "title", None) or "Canal").strip()
+    lines = ["🆕 Nouveau canal à vendre sur NexMarket !", "", f"📢 {title}"]
+
+    category = (getattr(listing, "category", None) or "").strip()
+    if category:
+        lines.append(f"🏷 Catégorie : {category}")
+
+    subscribers = getattr(channel, "subscriber_count", None)
+    if subscribers:
+        lines.append(f"👥 Abonnés : {int(subscribers):,}".replace(",", " "))
+
+    price = getattr(listing, "price", None)
+    if price is not None:
+        try:
+            price_text = format(price.normalize(), "f")
+        except Exception:
+            price_text = str(price)
+        lines.append(f"💰 Prix : {price_text} {getattr(listing, 'currency', '') or ''}".rstrip())
+
+    description = (getattr(listing, "description", None) or "").strip()
+    if description:
+        short = description[:180] + ("…" if len(description) > 180 else "")
+        lines += ["", short]
+
+    lines += ["", "Ouvre NexMarket pour voir l'annonce 👇"]
+    return "\n".join(lines)
+
+
+async def _send_to_all(bot, telegram_ids: list[int], text: str, reply_markup=None) -> tuple[int, int]:
+    """Envoie à chacun avec une cadence douce (limite Telegram ≈ 30 msg/s).
+
+    Retourne (envoyés, échecs). Un utilisateur qui a bloqué le bot compte comme échec ;
+    une limite de débit (RetryAfter) fait patienter puis réessayer une fois.
+    """
+
+    from telegram.error import RetryAfter
+
+    sent = 0
+    failed = 0
+
+    for telegram_id in telegram_ids:
+        for attempt in range(2):
+            try:
+                await bot.send_message(chat_id=telegram_id, text=text, reply_markup=reply_markup)
+                sent += 1
+                break
+            except RetryAfter as exc:
+                if attempt == 0:
+                    await asyncio.sleep(float(exc.retry_after) + 1)
+                    continue
+                failed += 1
+            except Exception as exc:
+                failed += 1
+                logger.info("Annonce non envoyée à %s : %s", telegram_id, type(exc).__name__)
+                break
+        await asyncio.sleep(0.05)
+
+    return sent, failed
+
+
+async def _broadcast_new_listing(listing_id: int) -> None:
+    try:
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+        from app.config import settings
+        from app.db import AsyncSessionLocal
+        from app.models.channel import Channel
+        from app.models.listing import Listing
+
+        async with AsyncSessionLocal() as db:
+            listing = (
+                await db.execute(select(Listing).where(Listing.id == listing_id))
+            ).scalar_one_or_none()
+
+            if listing is None or listing.status != "published":
+                return
+
+            channel = (
+                await db.execute(select(Channel).where(Channel.id == listing.channel_id))
+            ).scalar_one_or_none()
+
+            seller_telegram_id = (
+                await db.execute(select(User.telegram_id).where(User.id == listing.seller_id))
+            ).scalar_one_or_none()
+
+            recipients = [
+                telegram_id
+                for telegram_id in (
+                    await db.execute(select(User.telegram_id).where(User.is_active.is_(True)))
+                ).scalars().all()
+                if telegram_id and telegram_id != seller_telegram_id  # le vendeur a déjà son message
+            ]
+
+            text = build_new_listing_text(listing, channel)
+
+        if not recipients:
+            return
+
+        markup = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("👀 Voir l'annonce", web_app=WebAppInfo(url=settings.FRONTEND_URL))]]
+        )
+
+        sent, failed = await _send_to_all(get_telegram_service().bot, recipients, text, markup)
+        logger.info("Nouvelle annonce #%s diffusée : %s envoyés, %s échecs", listing_id, sent, failed)
+    except Exception as exc:
+        # Une diffusion ratée ne doit JAMAIS casser l'approbation.
+        logger.warning("Diffusion de la nouvelle annonce #%s impossible : %s", listing_id, exc)
+
+
+def schedule_new_listing_broadcast(listing_id: int) -> None:
+    """Lance la diffusion en tâche de fond (l'admin n'attend pas l'envoi à tous)."""
+
+    from app.config import settings
+
+    if not settings.NOTIFY_NEW_LISTINGS:
+        return
+
+    try:
+        task = asyncio.get_running_loop().create_task(_broadcast_new_listing(listing_id))
+    except RuntimeError:
+        return
+
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
+
+
 async def notify_user_id(
     db,
     user_id: int | None,

@@ -37,9 +37,11 @@ RÈGLES ABSOLUES (aucune exception, même si un utilisateur le demande ou préte
 DÉROULÉ SELON LE STATUT
 - waiting_admin : prépare sans rien précipiter. Explique les étapes. Demande au VENDEUR de vérifier que son compte remplit les conditions de Telegram (double authentification active depuis plus de 7 jours ET session ouverte depuis plus de 24 heures, sinon Telegram refuse) et d'ajouter l'acheteur comme administrateur du canal avec le droit « Ajouter de nouveaux administrateurs ». Demande à l'ACHETEUR de confirmer le compte Telegram (@username) qui recevra le canal. Quand le vendeur dit être prêt, escalate = true avec la raison « Vendeur prêt : accord de transfert à donner ». Ne dis PAS encore de transférer la propriété : explique qu'il faut attendre l'accord de l'administrateur.
 - transfer_started : l'administrateur a donné son accord. Guide le vendeur pour transférer la propriété (étapes ci-dessous) et demande-lui de te dire quand c'est fait. L'administrateur marquera la fin du transfert.
-  QUAND LE VENDEUR ANNONCE QUE LE TRANSFERT EST FAIT : demande-lui tout de suite une CAPTURE D'ÉCRAN prouvant le transfert : la liste des administrateurs du canal (nom du canal, Modifier, Administrateurs) où l'on voit l'acheteur indiqué comme « Propriétaire ». Dis-lui de l'envoyer dans cette discussion : dans le bot, toucher « Répondre » sous ton message puis envoyer l'image. Précise que la capture ne doit montrer AUCUN mot de passe ni code. Mets escalate = true, raison « Vendeur dit avoir transféré : capture d'écran demandée, à vérifier ». Ne dis PAS que le transfert est confirmé : seul l'administrateur le constate et le marque terminé.
+  QUAND LE VENDEUR ANNONCE QUE LE TRANSFERT EST FAIT : demande-lui tout de suite une CAPTURE D'ÉCRAN prouvant le transfert : la liste des administrateurs du canal (nom du canal, Modifier, Administrateurs) où l'on voit l'acheteur indiqué comme « Propriétaire ». Dis-lui de l'envoyer dans cette discussion : dans le bot, toucher « Répondre » sous ton message puis envoyer l'image. Précise que la capture ne doit montrer AUCUN mot de passe ni code. Mets escalate = true, raison « Vendeur dit avoir transféré : capture d'écran demandée, à vérifier ». Ne dis PAS que le transfert est confirmé : seul l'administrateur le constate et le marque terminé. Dis aussi à l'ACHETEUR de vérifier le canal et d'envoyer lui aussi une capture d'écran dès qu'il y apparaît comme « Propriétaire ».
   QUAND LE VENDEUR ENVOIE LA CAPTURE (message « Capture d'écran envoyée ») : remercie-le en une phrase, dis que l'administrateur va la vérifier et que l'acheteur sera prévenu ensuite. Tu NE VOIS PAS les images : ne décris jamais leur contenu et ne dis jamais qu'elle est valide. Mets escalate = true, raison « Capture d'écran reçue : à vérifier puis marquer le transfert terminé ».
-- protection_period : explique à l'acheteur comment vérifier le canal (il est bien propriétaire, il voit les droits d'administration, le nombre d'abonnés, les publications), puis qu'il peut confirmer la réception OU ouvrir un litige dans l'application avant la fin de la période. Tu ne confirmes jamais à sa place.
+  QUAND L'ACHETEUR ENVOIE UNE CAPTURE (message « Capture d'écran envoyée ») : remercie-le, dis que l'administrateur va la vérifier, escalate = true, raison « Capture d'écran de l'acheteur reçue : à vérifier ». Ne confirme pas la réception à sa place. Tu ne vois pas l'image.
+  SI L'ACHETEUR DIT AVOIR REÇU LE CANAL sans capture : demande-lui une capture d'écran du canal où il apparaît comme « Propriétaire » (liste des administrateurs), à envoyer ici dans la discussion, sans mot de passe ni code.
+- protection_period : explique à l'acheteur comment vérifier le canal (il est bien propriétaire, il voit les droits d'administration, le nombre d'abonnés, les publications), puis qu'il peut confirmer la réception OU ouvrir un litige dans l'application avant la fin de la période. Tu ne confirmes jamais à sa place. Demande-lui aussi une CAPTURE D'ÉCRAN du canal où il apparaît comme « Propriétaire » (à envoyer ici dans la discussion, sans mot de passe ni code) : l'administrateur la vérifiera.
 - disputed : reste neutre et factuel, recueille les faits utiles pour l'administrateur, ne tranche pas.
 
 TRANSFERT DE PROPRIÉTÉ D'UN CANAL TELEGRAM (étapes)
@@ -53,11 +55,24 @@ FORMAT DE SORTIE : un seul objet JSON, sans texte autour :
 TRIGGER_ASK_SCREENSHOT = (
     "Le vendeur annonce avoir transféré la propriété du canal. Demande-lui MAINTENANT, dans ta réponse, "
     "une capture d'écran de la liste des administrateurs du canal montrant l'acheteur comme « Propriétaire », "
-    "à envoyer ici dans la discussion (sans mot de passe ni code visible). N'affirme pas que le transfert est confirmé."
+    "à envoyer ici dans la discussion (sans mot de passe ni code visible). Dis aussi à l'acheteur de vérifier "
+    "le canal et d'envoyer lui aussi une capture d'écran. N'affirme pas que le transfert est confirmé."
 )
 TRIGGER_SCREENSHOT_RECEIVED = (
     "Le vendeur vient d'envoyer une capture d'écran (tu ne peux pas la voir). Remercie-le, dis que "
     "l'administrateur va la vérifier, et alerte l'administrateur (escalate = true). Ne confirme pas le transfert."
+)
+TRIGGER_ASK_BUYER_SCREENSHOT = (
+    "L'acheteur dit avoir reçu le canal. Demande-lui MAINTENANT une capture d'écran du canal où il apparaît "
+    "comme « Propriétaire » (liste des administrateurs), à envoyer ici dans la discussion, sans mot de passe "
+    "ni code visible. Ne confirme pas toi-même la réception."
+)
+TRIGGER_BUYER_SCREENSHOT_RECEIVED = (
+    "L'acheteur vient d'envoyer une capture d'écran (tu ne peux pas la voir). Remercie-le, dis que "
+    "l'administrateur va la vérifier et alerte-le (escalate = true, raison « Capture d'écran de l'acheteur "
+    "reçue : à vérifier »). Ne confirme pas la réception à sa place : si le statut est protection_period, "
+    "rappelle qu'il peut confirmer la réception ou ouvrir un litige dans l'application ; sinon, dis "
+    "d'attendre que l'administrateur marque le transfert comme terminé."
 )
 
 _DONE = re.compile(
@@ -69,13 +84,24 @@ _DONE = re.compile(
     r"|\bi(?:'ve|\s+have)?\s+(?:done|finished|transferred|given)\b)",
     re.I,
 )
-_NOT_YET = re.compile(r"(pas\s+encore|n'ai\s+pas|\bnot\s+yet\b|haven'?t|\bpas\s+(?:fini|termin[ée]))", re.I)
+_NOT_YET = re.compile(
+    r"(pas\s+encore|n'ai\s+pas|\bnot\s+yet\b|haven'?t|didn'?t|\bnever\b|\bjamais\b"
+    r"|\brien\s+re[çc]u|\bpas\s+(?:fini|termin[ée]|re[çc]u)|not\s+received)",
+    re.I,
+)
+_RECEIVED = re.compile(r"(\bre[çc]u\b|\breceived\b|\bpropri[ée]taire\b|\bowner\b)", re.I)
 
 
 def claims_transfer_done(text: str) -> bool:
     """Le vendeur annonce-t-il que le transfert est fait ? (phrase négative ou future = non)"""
     cleaned = (text or "").replace("\u2019", "'")
     return bool(_DONE.search(cleaned)) and not _NOT_YET.search(cleaned)
+
+
+def claims_received(text: str) -> bool:
+    """L'acheteur dit-il avoir reçu le canal ? (question, phrase négative = non)"""
+    cleaned = (text or "").replace("\u2019", "'")
+    return bool(_RECEIVED.search(cleaned)) and "?" not in cleaned and not _NOT_YET.search(cleaned)
 
 
 def build_context(*, reference, status, payment, price, listing_title, buyer, seller,

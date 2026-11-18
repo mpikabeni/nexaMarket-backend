@@ -206,16 +206,29 @@ async def _converse(transaction_id: int, trigger: str, trigger_message_id: int |
                 if trigger_message_id and (not rows or rows[-1].id != trigger_message_id):
                     return  # un message plus récent déclenchera la réponse
 
-                # Le vendeur dit avoir transféré le canal : l'assistant DOIT demander une capture
-                # d'écran (déclencheur côté serveur : on ne laisse pas cela au hasard du modèle).
+                # Captures d'écran : le vendeur (transfert fait) puis l'acheteur (canal reçu).
+                # Déclencheur côté serveur : la demande ne dépend pas du hasard du modèle.
                 last = rows[-1] if rows else None
-                if transaction.status == "transfer_started" and last is not None and last.sender_role == "seller":
-                    if last.attachment_file_id and last.message_type in ("image", "document"):
-                        trigger = logic.TRIGGER_SCREENSHOT_RECEIVED
-                    elif logic.claims_transfer_done(last.content or "") and not any(
-                        m.sender_role == "seller" and m.attachment_file_id for m in rows
-                    ):
-                        trigger = logic.TRIGGER_ASK_SCREENSHOT
+                if (
+                    last is not None
+                    and transaction.status in ("transfer_started", "protection_period")
+                    and last.sender_role in ("seller", "buyer")
+                ):
+                    is_image = bool(last.attachment_file_id) and last.message_type in ("image", "document")
+                    already_sent = any(
+                        m.sender_role == last.sender_role and m.attachment_file_id for m in rows
+                    )
+                    text = last.content or ""
+                    if last.sender_role == "seller" and transaction.status == "transfer_started":
+                        if is_image:
+                            trigger = logic.TRIGGER_SCREENSHOT_RECEIVED
+                        elif not already_sent and logic.claims_transfer_done(text):
+                            trigger = logic.TRIGGER_ASK_SCREENSHOT
+                    elif last.sender_role == "buyer":
+                        if is_image:
+                            trigger = logic.TRIGGER_BUYER_SCREENSHOT_RECEIVED
+                        elif not already_sent and logic.claims_received(text):
+                            trigger = logic.TRIGGER_ASK_BUYER_SCREENSHOT
 
                 sent = (
                     await db.scalar(
