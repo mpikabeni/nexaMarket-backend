@@ -23,7 +23,10 @@ from app.deps import CurrentAdmin, DBSession
 from app.models.channel import Channel
 from app.models.listing import Listing
 from app.services import gram_service, money_notifications
-from app.services.notification_service import notify_user_id
+from app.services.notification_service import (
+    notify_user_id,
+    schedule_new_listing_broadcast,
+)
 from app.models.message import Message
 from app.models.platform import PlatformWallet
 from app.models.listing_proof import ListingProof
@@ -861,6 +864,10 @@ async def approve_listing(
 
     now = datetime.now(timezone.utc)
 
+    # Première publication seulement : une annonce modifiée puis ré-approuvée
+    # ne doit pas re-notifier tous les membres.
+    first_publication = listing.published_at is None
+
     listing.status = "published"
     listing.is_public = True
     listing.reviewed_by_admin_id = current_admin.id
@@ -886,6 +893,9 @@ async def approve_listing(
         "✅ Votre annonce a été approuvée et est maintenant visible "
         "sur NexMarket.",
     )
+
+    if first_publication:
+        schedule_new_listing_broadcast(listing.id)
 
     return {
         "status": "success",
