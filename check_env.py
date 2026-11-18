@@ -24,6 +24,8 @@ OPTIONAL = [
     "TELEGRAM_BOT_USERNAME",
     "CORS_ORIGINS",
     "PUBLIC_URL",
+    "GROQ_API_KEY",
+    "GEMINI_API_KEY",
 ]
 
 problems = []

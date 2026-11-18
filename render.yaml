@@ -75,6 +75,14 @@ services:
       - key: NEXA_JP_NUMBER
         sync: false
 
+      # --- Assistant IA : 2 fournisseurs gratuits en cascade (une seule clé suffit) ---
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: ASSISTANT_PROVIDERS
+        value: groq,gemini
+
 databases:
   - name: nexmarket-db
     databaseName: nexmarket

@@ -128,3 +128,45 @@ Nouvelles colonnes ajoutées automatiquement au démarrage (MIGRATION_v20.sql).
   vérification auprès de JessiKaPay). À activer en donnant cette URL HTTPS
   (https://VOTRE-SERVICE.onrender.com/api/webhooks/jessikapay) comme `webhook_url`
   de l'application JessiKaPay.
+
+# v21 — Assistant IA des transactions + aperçu des canaux privés
+
+**Assistant IA (Groq / Gemini, gratuits)** : dès que les fonds sont bloqués, « l'Assistant IA
+NexMarket » prend la parole dans la discussion acheteur / vendeur / admin (et
+dans leurs messages Telegram du bot), guide chacun pour le transfert du canal et
+répond à leurs questions. Il est SUPERVISÉ :
+- il ne touche jamais à l'argent ni au statut de la transaction ;
+- il n'autorise rien : l'accord de transfert vient de l'administrateur (bouton
+  « ✅ Autoriser le transfert » dans le bot, ou console) ;
+- quand le vendeur est prêt, un doute ou un litige apparaît, l'admin reçoit une
+  alerte avec le bouton d'accord ;
+- garde-fous : ne demande jamais mot de passe / code, ne dit jamais « paiement
+  reçu », n'ordonne pas le transfert avant l'accord ; limite de 60 messages par
+  transaction.
+Configuration (Render) : deux fournisseurs GRATUITS en cascade. Une seule clé
+suffit ; avec les deux, si l'un est limité ou en panne, l'assistant passe à l'autre :
+- GROQ_API_KEY   (https://console.groq.com/keys)
+- GEMINI_API_KEY (https://aistudio.google.com/apikey)
+ASSISTANT_PROVIDERS = ordre d'essai (défaut groq,gemini). Modèles réglables :
+GROQ_MODEL, GEMINI_MODEL.
+
+**Canaux privés** : le vendeur ajoute 1 à 6 photos d'aperçu (obligatoire), que
+les acheteurs voient en cliquant sur l'annonce (galerie + visionneuse). Les
+photos de preuve restent réservées à l'admin. Nouvelle colonne
+listing_proofs.kind (ajoutée automatiquement au démarrage).
+
+**Vente** : le moyen de paiement se choisit d'abord (JessiKaPay OU GRAM) ; une
+fois choisi, plus aucune trace de l'autre dans le formulaire (bouton « Changer »).
+
+# v26 — Capture d'écran de preuve du transfert (bot)
+
+Quand le vendeur annonce avoir transféré la propriété du canal (statut « transfert
+commencé »), l'assistant lui demande une capture d'écran : la liste des
+administrateurs du canal où l'acheteur apparaît comme « Propriétaire » (sans mot de
+passe ni code visible). Le déclencheur est côté serveur (détection de « c'est fait »,
+« transféré », « done »…) : la demande ne dépend pas du hasard du modèle.
+- Le bot accepte maintenant les photos (et images envoyées comme fichier) dans une
+  discussion ouverte ; la capture est relayée à l'administrateur et à l'acheteur.
+- L'assistant NE VOIT PAS l'image : il remercie, alerte l'administrateur et ne confirme
+  jamais le transfert. L'administrateur vérifie la capture puis marque le transfert
+  terminé.
