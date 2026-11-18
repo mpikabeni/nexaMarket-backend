@@ -147,7 +147,11 @@ async def get_transaction_messages(
                 "id": message.id,
                 "transaction_id": message.transaction_id,
                 "sender_id": message.sender_id,
-                "sender_name": names.get(message.sender_id),
+                "sender_name": (
+                    "Assistant IA"
+                    if message.sender_role == "assistant"
+                    else names.get(message.sender_id)
+                ),
                 "sender_role": message.sender_role,
                 "content": message.content,
                 "message_type": message.message_type,

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Response, status
 from sqlalchemy import func, or_, select
 
 from app.config import settings
@@ -28,7 +28,7 @@ from app.models.user import User
 from app.services import gram_service, ton
 from app.services.media import channel_photo_url
 from app.services.notification_service import admin_chat_ids, notify_admins_listing
-from app.services.proofs import decode_proofs
+from app.services.proofs import decode_previews, decode_proofs
 from app.models.schemas import ListingCreate, ListingUpdate
 
 
@@ -363,12 +363,54 @@ async def get_listing(
 
     sellers = await load_sellers(db, {listing.seller_id})
 
+    data = listing_to_dict(listing, channel, sellers.get(listing.seller_id))
+
+    # Photos d'aperçu du canal (visibles par les acheteurs, surtout utiles
+    # pour un canal privé que l'on ne peut pas ouvrir).
+    data["preview_ids"] = list(
+        (
+            await db.execute(
+                select(ListingProof.id)
+                .where(
+                    ListingProof.listing_id == listing.id,
+                    ListingProof.kind == "preview",
+                )
+                .order_by(ListingProof.id)
+            )
+        ).scalars()
+    )
+
     return {
         "status": "success",
-        "listing": listing_to_dict(
-            listing, channel, sellers.get(listing.seller_id)
-        ),
+        "listing": data,
     }
+
+
+@router.get("/previews/{preview_id}")
+async def get_preview_image(preview_id: int, db: DBSession):
+    """Image d'aperçu d'une annonce PUBLIÉE (jamais les preuves de l'admin)."""
+
+    row = (
+        await db.execute(
+            select(ListingProof, Listing)
+            .join(Listing, Listing.id == ListingProof.listing_id)
+            .where(ListingProof.id == preview_id, ListingProof.kind == "preview")
+        )
+    ).first()
+
+    if row is None:
+        raise HTTPException(404, "Image introuvable.")
+
+    proof, listing = row
+
+    if listing.status not in ("published", "reserved") or not listing.is_public:
+        raise HTTPException(404, "Image introuvable.")
+
+    return Response(
+        content=proof.data,
+        media_type=proof.content_type,
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ============================================================
@@ -463,6 +505,16 @@ async def create_listing(
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
+    # Aperçu visible par les acheteurs : obligatoire pour un canal PRIVÉ
+    # (pas de lien public pour le consulter).
+    try:
+        previews = decode_previews(
+            payload.preview_images,
+            required=not bool(channel.telegram_username),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
     listing = Listing(
         channel_id=channel.id,
         seller_id=current_user.id,
@@ -485,6 +537,17 @@ async def create_listing(
         db.add(
             ListingProof(
                 listing_id=listing.id,
+                kind="proof",
+                content_type=content_type,
+                data=data,
+            )
+        )
+
+    for content_type, data in previews:
+        db.add(
+            ListingProof(
+                listing_id=listing.id,
+                kind="preview",
                 content_type=content_type,
                 data=data,
             )
