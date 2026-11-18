@@ -28,6 +28,16 @@ class ListingProof(Base):
         nullable=False,
     )
 
+    # "proof" = preuve réservée à l'administrateur ;
+    # "preview" = aperçu du canal, visible par les acheteurs.
+    kind: Mapped[str] = mapped_column(
+        String(12),
+        default="proof",
+        server_default="proof",
+        nullable=False,
+        index=True,
+    )
+
     content_type: Mapped[str] = mapped_column(
         String(50),
         default="image/jpeg",

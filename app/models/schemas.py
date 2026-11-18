@@ -179,6 +179,9 @@ class ListingCreate(BaseModel):
     # Annonce payée en GRAM (currency == "GRAM") : adresse du vendeur.
     gram_address: str | None = Field(default=None, max_length=80)
 
+    # Aperçu du canal visible par les acheteurs (obligatoire si canal privé).
+    preview_images: list[str] = Field(default_factory=list, max_length=6)
+
 
 class ListingUpdate(BaseModel):
     price: Decimal | None = Field(
