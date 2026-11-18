@@ -1,4 +1,4 @@
-"""Assistant IA des transactions (Claude) : orchestration.
+"""Assistant IA des transactions (Mistral) : orchestration.
 
 Quand une transaction démarre (fonds bloqués), l'assistant prend la parole dans
 la discussion acheteur / vendeur / admin, guide chacun pour le transfert du canal
@@ -37,7 +37,7 @@ logger = logging.getLogger("nexmarket.assistant")
 
 ACTIVE_STATUSES = ("waiting_admin", "transfer_started", "protection_period", "disputed")
 MAX_REPLIES_PER_TRANSACTION = 60
-API_URL = "https://api.anthropic.com/v1/messages"
+API_URL = "https://api.mistral.ai/v1/chat/completions"
 
 _tasks: set[asyncio.Task] = set()
 _locks: dict[int, asyncio.Lock] = {}
@@ -45,7 +45,7 @@ _last_alert: dict[int, tuple[str, float]] = {}
 
 
 def enabled() -> bool:
-    return bool((settings.ANTHROPIC_API_KEY or "").strip())
+    return bool((settings.MISTRAL_API_KEY or "").strip())
 
 
 def _schedule(coro) -> None:
@@ -84,15 +84,19 @@ def on_status(transaction_id: int, status: str) -> None:
 
 async def _call_llm(system: str, user_prompt: str) -> str:
     headers = {
-        "x-api-key": settings.ANTHROPIC_API_KEY.strip(),
-        "anthropic-version": "2023-06-01",
-        "content-type": "application/json",
+        "Authorization": f"Bearer {settings.MISTRAL_API_KEY.strip()}",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
     }
     body = {
         "model": settings.ASSISTANT_MODEL,
         "max_tokens": 700,
-        "system": system,
-        "messages": [{"role": "user", "content": user_prompt}],
+        "temperature": 0.3,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ],
     }
     last_error: Exception | None = None
     async with httpx.AsyncClient(timeout=45.0) as client:
@@ -100,19 +104,21 @@ async def _call_llm(system: str, user_prompt: str) -> str:
             try:
                 response = await client.post(API_URL, json=body, headers=headers)
                 if response.status_code in (429, 500, 502, 503, 529) and attempt == 0:
-                    await asyncio.sleep(2)
+                    # L'offre gratuite Mistral limite le débit : on attend un peu avant de réessayer.
+                    await asyncio.sleep(3)
                     continue
                 response.raise_for_status()
                 data = response.json()
-                return "".join(
-                    block.get("text", "")
-                    for block in data.get("content", [])
-                    if block.get("type") == "text"
-                )
-            except httpx.HTTPError as exc:
+                content = data["choices"][0]["message"]["content"]
+                if isinstance(content, list):  # certains modèles renvoient des blocs
+                    content = "".join(
+                        block.get("text", "") for block in content if isinstance(block, dict)
+                    )
+                return content or ""
+            except (httpx.HTTPError, KeyError, IndexError, TypeError) as exc:
                 last_error = exc
                 if attempt == 0:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
     raise RuntimeError(f"Appel à l'assistant impossible : {last_error}")
 
 
