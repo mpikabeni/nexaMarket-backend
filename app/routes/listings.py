@@ -465,6 +465,14 @@ async def create_listing(
             "avec les permissions requises.",
         )
 
+    if (channel.subscriber_count or 0) < settings.MIN_CHANNEL_SUBSCRIBERS:
+        minimum = f"{settings.MIN_CHANNEL_SUBSCRIBERS:,}".replace(",", " ")
+        raise HTTPException(
+            400,
+            f"Ton canal doit avoir au moins {minimum} abonnés "
+            "pour être mis en vente.",
+        )
+
     currency = payload.currency.strip().upper()
     gram_address = None
 
