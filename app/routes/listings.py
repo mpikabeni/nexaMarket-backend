@@ -499,7 +499,7 @@ async def create_listing(
             "Ce canal possède déjà une annonce active.",
         )
 
-    # Photos de preuve : obligatoires, envoyées à l'administrateur.
+    # Photos de preuve : facultatives (les aperçus du canal privé suffisent).
     try:
         proofs = decode_proofs(payload.proof_images)
     except ValueError as exc:
@@ -572,7 +572,7 @@ async def create_listing(
             f"Vendeur : {current_user.first_name or current_user.username or current_user.nexa_id}"
             f" ({current_user.nexa_id})"
         ),
-        [data for _, data in proofs],
+        [data for _, data in (proofs or previews)],
     )
 
     return {

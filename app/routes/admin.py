@@ -805,22 +805,7 @@ async def approve_listing(
             detail="Annonce introuvable.",
         )
 
-    # Les photos de preuve (envoyées par le vendeur) doivent exister.
-    proofs_count = await db.scalar(
-        select(func.count())
-        .select_from(ListingProof)
-        .where(ListingProof.listing_id == listing_id)
-    )
-
-    if not proofs_count and not without_proofs:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=(
-                "Aucune photo de preuve n'a été fournie pour cette annonce. "
-                "Demandez-les au vendeur, ou approuvez quand même en "
-                "confirmant."
-            ),
-        )
+    # Photos de preuve facultatives : on peut approuver sans.
 
     channel_result = await db.execute(
         select(Channel).where(
