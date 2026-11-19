@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # temporairement cette obligation (tests).
     REQUIRE_BOT_AND_CHANNEL: bool = True
 
+    # Nombre minimum d'abonnés pour mettre un canal en vente.
+    MIN_CHANNEL_SUBSCRIBERS: int = 1000
+
     # ========================================================
     # ADMIN
     # ========================================================
