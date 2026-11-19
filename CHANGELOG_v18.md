@@ -191,3 +191,7 @@ membres actifs du bot (sauf le vendeur) reçoivent « Nouveau canal à vendre »
 abonnés, prix et un bouton qui ouvre NexMarket. Envoi en tâche de fond (≈ 20 messages/s,
 l'admin n'attend pas). Une annonce modifiée puis ré-approuvée ne re-notifie pas.
 Désactivable : NOTIFY_NEW_LISTINGS=false.
+
+## v28
+- Photos de preuve facultatives (canaux publics sans photo, canaux privés avec photos d'aperçu).
+- Minimum de 1 000 abonnés pour soumettre un canal et créer une annonce (variable `MIN_CHANNEL_SUBSCRIBERS`).
