@@ -26,11 +26,9 @@ def decode_proofs(images: list[str]) -> list[tuple[str, bytes]]:
     Lève ValueError avec un message lisible.
     """
 
+    # Preuves facultatives : plus aucune photo exigée du vendeur.
     if not images:
-        raise ValueError(
-            "Ajoute au moins une photo de preuve (capture des statistiques "
-            "de ton canal) : elle est envoyée à l'administrateur."
-        )
+        return []
 
     if len(images) > MAX_PROOFS:
         raise ValueError(f"Maximum {MAX_PROOFS} photos de preuve.")
