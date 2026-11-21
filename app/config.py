@@ -99,6 +99,12 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash"
 
     GRAM_RECEIVE_ADDRESS: str = ""
+
+    # Cours du GRAM : relu sur le marché toutes les 10 minutes (600 s).
+    # GRAM_XAF_RATE (optionnel) : impose un cours manuel (nombre de FCFA
+    # pour 1 GRAM) à la place du marché, p. ex. en cas de panne des API.
+    GRAM_RATE_REFRESH_SECONDS: int = 600
+    GRAM_XAF_RATE: float = 0
     TON_API_BASE: str = "https://toncenter.com/api/v3"
     TON_API_KEY: str = ""
 

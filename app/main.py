@@ -131,6 +131,27 @@ async def _gram_loop() -> None:
 
 
 # ============================================================
+# COURS DU GRAM : relu sur le marché toutes les 10 minutes
+# ============================================================
+
+async def _gram_rate_loop() -> None:
+    from app.services import gram_rate
+
+    while True:
+        try:
+            await gram_rate.get_rate(force=True)
+            changed = await gram_rate.refresh_listing_prices(AsyncSessionLocal)
+            if changed:
+                logger.info("Prix GRAM mis à jour sur %s annonce(s)", changed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Échec de la mise à jour du cours du GRAM")
+
+        await asyncio.sleep(gram_rate.refresh_seconds())
+
+
+# ============================================================
 # VERSEMENT DES COMMISSIONS vers le compte JessiKaPay NexMarket
 # ============================================================
 
@@ -319,6 +340,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_deposit_sync_loop()),
         asyncio.create_task(_commission_loop()),
         asyncio.create_task(_gram_loop()),
+        asyncio.create_task(_gram_rate_loop()),
         asyncio.create_task(_keepalive_loop()),
     ]
 

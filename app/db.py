@@ -167,6 +167,8 @@ SCHEMA_PATCHES = [
     "ALTER TABLE deposits ADD COLUMN IF NOT EXISTS country VARCHAR(10)",
     # Paiement en GRAM (v20)
     "ALTER TABLE listings ADD COLUMN IF NOT EXISTS seller_gram_address VARCHAR(80)",
+    # Prix en FCFA des annonces payées en GRAM (cours du marché, v28)
+    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS price_xaf NUMERIC(18,2)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS buyer_gram_address VARCHAR(80)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS seller_gram_address VARCHAR(80)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gram_tx_hash VARCHAR(120)",
