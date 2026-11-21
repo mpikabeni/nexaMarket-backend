@@ -25,7 +25,7 @@ from app.models.listing_proof import ListingProof
 from app.models.review import Review
 from app.models.transaction import Transaction
 from app.models.user import User
-from app.services import gram_service, ton
+from app.services import gram_rate, gram_service, ton
 from app.services.media import channel_photo_url
 from app.services.notification_service import admin_chat_ids, notify_admins_listing
 from app.services.proofs import decode_previews, decode_proofs
@@ -61,6 +61,10 @@ def listing_to_dict(
         "category": listing.category,
         "price": price,
         "currency": listing.currency,
+        # Annonce GRAM : prix en FCFA de référence (le prix en GRAM suit le marché).
+        "price_xaf": (
+            float(listing.price_xaf) if listing.price_xaf is not None else None
+        ),
         # Repère de comparaison « boutique » : prix pour 1 000 abonnés.
         "price_per_1k": (
             round(price / subscribers * 1000)
@@ -475,6 +479,8 @@ async def create_listing(
 
     currency = payload.currency.strip().upper()
     gram_address = None
+    listing_price = payload.price
+    listing_price_xaf = None
 
     if currency == "GRAM":
         # Annonce payée en GRAM (TON) : adresse du vendeur + prix minimal.
@@ -486,9 +492,22 @@ async def create_listing(
                 "Adresse GRAM invalide : recopiez-la depuis votre portefeuille "
                 "(c'est là que vous recevrez le paiement).",
             )
-        if payload.price < Decimal("1"):
-            raise HTTPException(400, "Le prix minimum en GRAM est de 1 GRAM.")
         gram_address = payload.gram_address.strip()
+        if payload.price_xaf is not None:
+            # Prix fixé en FCFA : converti en GRAM au cours du marché.
+            try:
+                gram_price, _rate = await gram_rate.quote(payload.price_xaf)
+            except gram_rate.GramRateUnavailable as exc:
+                raise HTTPException(503, str(exc)) from exc
+            listing_price = gram_price
+            listing_price_xaf = payload.price_xaf
+        else:
+            listing_price = payload.price
+        if listing_price < Decimal("1"):
+            raise HTTPException(
+                400,
+                "Le prix minimum est de 1 GRAM : augmentez le prix en FCFA.",
+            )
     elif currency not in settings.get_supported_currencies():
         raise HTTPException(400, "Devise non supportée.")
 
@@ -529,7 +548,8 @@ async def create_listing(
         title=(payload.title or channel.title or "Canal Telegram").strip(),
         category=payload.category,
         description=payload.description,
-        price=payload.price,
+        price=listing_price,
+        price_xaf=listing_price_xaf,
         currency=currency,
         seller_gram_address=gram_address,
         status="pending_review",
@@ -637,12 +657,32 @@ async def update_listing(
 
         data["currency"] = currency
 
-    if (
-        listing.currency == "GRAM"
-        and data.get("price") is not None
-        and Decimal(str(data["price"])) < Decimal("1")
-    ):
-        raise HTTPException(400, "Le prix minimum en GRAM est de 1 GRAM.")
+    if listing.currency == "GRAM" and listing.price_xaf is not None:
+        # Annonce à prix en FCFA : on modifie le prix en FCFA, le prix en
+        # GRAM en est déduit au cours du marché.
+        if data.get("price") is not None and data.get("price_xaf") is None:
+            raise HTTPException(400, "Indiquez le nouveau prix en FCFA.")
+        data.pop("price", None)
+        if data.get("price_xaf") is not None:
+            try:
+                new_gram, _rate = await gram_rate.quote(data["price_xaf"])
+            except gram_rate.GramRateUnavailable as exc:
+                raise HTTPException(503, str(exc)) from exc
+            if new_gram < Decimal("1"):
+                raise HTTPException(
+                    400,
+                    "Le prix minimum est de 1 GRAM : augmentez le prix en FCFA.",
+                )
+            listing.price_xaf = data["price_xaf"]
+            data["price"] = new_gram
+    else:
+        data.pop("price_xaf", None)
+        if (
+            listing.currency == "GRAM"
+            and data.get("price") is not None
+            and Decimal(str(data["price"])) < Decimal("1")
+        ):
+            raise HTTPException(400, "Le prix minimum en GRAM est de 1 GRAM.")
 
     for field in ("price", "currency", "title", "description", "category"):
         if field in data and data[field] is not None:
