@@ -176,6 +176,10 @@ class ListingCreate(BaseModel):
         max_length=4,
     )
 
+    # Annonce payée en GRAM : prix du canal en FCFA. Le prix en GRAM est
+    # calculé par le serveur au cours du marché (mis à jour toutes les 10 min).
+    price_xaf: Decimal | None = Field(default=None, gt=0, decimal_places=2)
+
     # Annonce payée en GRAM (currency == "GRAM") : adresse du vendeur.
     gram_address: str | None = Field(default=None, max_length=80)
 
@@ -189,6 +193,9 @@ class ListingUpdate(BaseModel):
         gt=0,
         decimal_places=2,
     )
+
+    # Annonce GRAM à prix en FCFA : nouveau prix en FCFA.
+    price_xaf: Decimal | None = Field(default=None, gt=0, decimal_places=2)
 
     currency: str | None = Field(
         default=None,
