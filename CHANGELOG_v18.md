@@ -195,3 +195,7 @@ Désactivable : NOTIFY_NEW_LISTINGS=false.
 ## v28
 - Photos de preuve facultatives (canaux publics sans photo, canaux privés avec photos d'aperçu).
 - Minimum de 1 000 abonnés pour soumettre un canal et créer une annonce (variable `MIN_CHANNEL_SUBSCRIBERS`).
+- Prix GRAM au cours du marché : le vendeur fixe le prix en FCFA, le prix en GRAM est recalculé toutes les 10 min
+  (tonapi.io, secours CoinGecko) puis figé sur la transaction à l'achat. Nouvelle colonne `listings.price_xaf`
+  (ajoutée automatiquement, voir MIGRATION_v28.sql). Variables optionnelles : `GRAM_RATE_REFRESH_SECONDS` (600),
+  `GRAM_XAF_RATE` (cours manuel en FCFA pour 1 GRAM). `GET /rates` expose `gram.xaf_per_gram`.
