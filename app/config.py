@@ -78,6 +78,11 @@ class Settings(BaseSettings):
     # Numéro JP de NexMarket : reçoit les commissions (payout gratuit).
     NEXA_JP_NUMBER: str = ""
 
+    # Comptes créés AVANT cette date (ISO) = comptes existants : ils gardent
+    # leur NEXA ID dans le bot sans repasser par la création de compte.
+    # Mets ici la date de mise en ligne de cette version.
+    LEGACY_ACCOUNTS_BEFORE: str = "2026-11-25T00:00:00+00:00"
+
     # ========================================================
     # PAIEMENT EN GRAM (TON) : adresse de NexMarket + lecture blockchain
     # GRAM_RECEIVE_ADDRESS : adresse du portefeuille de NexMarket (copiée

@@ -91,15 +91,15 @@ def main_keyboard() -> InlineKeyboardMarkup:
 # Aide au retrait : plus aucun compte externe à créer. On retire directement
 # vers son numéro Mobile Money (MTN, Airtel, Orange, Moov, Wave...).
 WITHDRAW_HELP_TEXT = (
-    "💸 <b>Retirer ton argent</b>\n\n"
-    "Les retraits NexMarket sont envoyés directement sur ton compte "
-    "<b>Mobile Money</b>, dans de nombreux pays et réseaux "
-    "(MTN, Airtel, Orange, Moov, Wave...).\n\n"
-    "1️⃣ Ouvre NexMarket → Wallet → <b>Retirer</b>.\n"
-    "2️⃣ Choisis ton <b>pays</b>, puis ton <b>réseau</b>.\n"
-    "3️⃣ Entre ton <b>numéro Mobile Money</b> et le montant, puis confirme.\n\n"
-    "Tu es prévenu ici dès que le retrait est effectué. "
-    "Si ton pays ou ton réseau n'apparaît pas, il n'est pas encore disponible."
+    "💸 <b>Recevoir ton argent</b>\n\n"
+    "Quand tu vends un canal, ton argent est envoyé sur ton "
+    "<b>compte JessiKaPay</b> (ton numéro <b>JP</b>), une fois le paiement "
+    "de l'acheteur confirmé et la livraison validée par l'équipe NexMarket.\n\n"
+    "1️⃣ Mets ton canal en vente dans NexMarket et entre ton <b>numéro JP</b>.\n"
+    "2️⃣ L'acheteur paie : son argent reste <b>bloqué</b> jusqu'à la livraison.\n"
+    "3️⃣ Après la libération, l'argent arrive sur ton <b>compte JessiKaPay</b>.\n"
+    "4️⃣ Depuis JessiKaPay, tu le retires ensuite vers ton Mobile Money.\n\n"
+    "Tu es prévenu ici dès que l'argent est envoyé."
 )
 
 
@@ -458,6 +458,24 @@ async def start_command(
             # On conserve le même NEXA ID
             nexa_id = user.nexa_id
 
+            # Le NEXA ID n'est montré qu'après la création du compte dans la
+            # mini-app (ou pour un compte déjà existant avant cette règle).
+            has_account = bool(user.onboarded_at)
+
+            if not has_account:
+                try:
+                    from datetime import datetime as _dt
+
+                    cutoff = _dt.fromisoformat(settings.LEGACY_ACCOUNTS_BEFORE)
+                    created = user.created_at
+
+                    if created is not None and created.tzinfo is None:
+                        created = created.replace(tzinfo=cutoff.tzinfo)
+
+                    has_account = bool(created and created < cutoff)
+                except Exception:
+                    has_account = False
+
             # Statut admin
             is_admin = bool(user.is_admin)
 
@@ -474,11 +492,17 @@ async def start_command(
             "📢 <b>Vendre</b> votre canal\n"
             "💼 <b>Suivre</b> vos transactions\n"
             "🔐 <b>Transactions sécurisées</b>\n\n"
-            "🆔 <b>Votre NEXA ID</b>\n"
-            f"<code>{nexa_id}</code>\n\n"
-            "<b>Votre compte NexMarket est prêt.</b>\n\n"
-            "💸 <b>Retraits Mobile Money</b> dans plusieurs pays "
-            "et réseaux : voir /retrait.\n\n"
+            + (
+                "🆔 <b>Votre NEXA ID</b>\n"
+                f"<code>{nexa_id}</code>\n\n"
+                "<b>Votre compte NexMarket est prêt.</b>\n\n"
+                if has_account
+                else "👉 <b>Ouvrez NexMarket et créez votre compte</b> "
+                "pour obtenir votre NEXA ID.\n\n"
+            )
+            +
+            "💸 <b>Tes gains</b> arrivent sur ton compte JessiKaPay "
+            "après le paiement : voir /retrait.\n\n"
             "Propulsé par <b>NEXA</b>."
         )
 
@@ -545,7 +569,7 @@ async def help_command(
         "<b>/about</b> — informations sur NexMarket\n"
         "<b>/verify @canal</b> — vérifier un canal\n"
         "<b>/transaction NEX-...</b> — consulter une transaction\n"
-        "<b>/retrait</b> — comment retirer ton argent\n\n"
+        "<b>/retrait</b> — comment recevoir ton argent\n\n"
         "Les achats et ventes se poursuivent depuis la Mini App."
     )
 
