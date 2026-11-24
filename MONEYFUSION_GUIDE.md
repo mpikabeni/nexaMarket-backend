@@ -114,3 +114,9 @@ si vous préférez les créer à la main).
 ## 12. v37 — Retirer / Bannir un canal
 - DELETE /api/admin/channels/{id}?ban=false : retrait réversible (statut « withdrawn »), le vendeur peut resoumettre.
 - DELETE /api/admin/channels/{id}?ban=true : bannissement définitif (statut « removed »).
+
+## 13. v38 — Bot : /retrait et message d'accueil expliquent que l'argent arrive sur le compte JessiKaPay (numéro JP).
+
+## 14. v39 — NEXA ID dans le bot seulement après création du compte
+- /start : le NEXA ID n'apparaît que si le compte est créé dans la mini-app (onboarded_at) ou créé avant LEGACY_ACCOUNTS_BEFORE.
+- À la fin de la création du compte, le bot envoie le NEXA ID en message.
