@@ -6,10 +6,8 @@
 #    polling ; deux processus sur le même token => erreur Telegram
 #    409 Conflict. (De plus `python bot.py` visait un fichier qui
 #    n'existe pas à la racine : le worker ne pouvait pas démarrer.)
-#  - suppression des variables MONEYFUSION_* (fournisseur jamais lu
-#    par le code) ;
-#  - ajout des variables JESSIKAPAY_*, ADMIN_TELEGRAM_ID,
-#    qui manquaient ; pas de webhook JessiKaPay (dépôts vérifiés par polling) ;
+#  - paiements MoneyFusion (variables MONEYFUSION_*, NEXA_PAYOUT_*) ;
+#    dépôts et retraits vérifiés par l'API (webhooks non signés) ;
 #  - nom du service aligné sur l'URL appelée par le frontend.
 # =========================================================
 
@@ -19,6 +17,9 @@ services:
     # service est https://nexamarket-backend-ffea.onrender.com (celle du frontend).
     name: nexamarket-backend
     runtime: docker
+    # RECOMMANDÉ : une offre payante (Starter) pour la production. En offre gratuite le
+    # service s'endort après quelques minutes sans visite : le bot Telegram et les
+    # tâches de fond (dépôts, retraits, versements) s'arrêtent alors.
     healthCheckPath: /health
     envVars:
       - key: APP_NAME
@@ -28,11 +29,11 @@ services:
       - key: ENVIRONMENT
         value: production
       - key: FRONTEND_URL
-        value: https://nexamarketf.netlify.app
+        value: https://nexamarke.netlify.app
       - key: PUBLIC_URL
         value: https://nexamarket-backend-ffea.onrender.com
       - key: CORS_ORIGINS
-        value: https://nexamarketf.netlify.app
+        value: https://nexamarke.netlify.app
 
       - key: DATABASE_URL
         fromDatabase:
@@ -65,14 +66,35 @@ services:
       - key: PENDING_PAYMENT_TTL_MINUTES
         value: 120
 
-      # --- JessiKaPay ---
-      - key: JESSIKAPAY_API_URL
-        sync: false
+      # --- MoneyFusion (dépôts + retraits Mobile Money, tous pays/réseaux) ---
+      - key: JESSIKAPAY_BASE_URL
+        value: https://preferred-antonia-youtub-c1a62de8.koyeb.app
       - key: JESSIKAPAY_API_KEY
         sync: false
       - key: JESSIKAPAY_API_SECRET
         sync: false
       - key: NEXA_JP_NUMBER
+        sync: false
+      - key: MONEYFUSION_API_URL
+        sync: false
+      - key: MONEYFUSION_PRIVATE_KEY
+        sync: false
+      # Généré par Render : copiez-le ensuite dans l'URL du webhook (voir DEPLOY_RENDER.md)
+      - key: MONEYFUSION_WEBHOOK_SECRET
+        generateValue: true
+      - key: MONEYFUSION_DEPOSIT_FEE_RATE
+        value: 0.05
+      - key: NOTIFY_NEW_LISTINGS
+        value: true
+      # Devises non CFA : {"GNF": 0.07, "CDF": 0.21} (valeur d'1 unité en XAF).
+      - key: MONEYFUSION_FX_TO_XAF
+        sync: false
+      # Compte Mobile Money qui reçoit les commissions NexMarket
+      - key: NEXA_PAYOUT_COUNTRY
+        sync: false
+      - key: NEXA_PAYOUT_METHOD
+        sync: false
+      - key: NEXA_PAYOUT_PHONE
         sync: false
 
       # --- Assistant IA : 2 fournisseurs gratuits en cascade (une seule clé suffit) ---

@@ -192,10 +192,25 @@ abonnés, prix et un bouton qui ouvre NexMarket. Envoi en tâche de fond (≈ 20
 l'admin n'attend pas). Une annonce modifiée puis ré-approuvée ne re-notifie pas.
 Désactivable : NOTIFY_NEW_LISTINGS=false.
 
-## v28
-- Photos de preuve facultatives (canaux publics sans photo, canaux privés avec photos d'aperçu).
-- Minimum de 1 000 abonnés pour soumettre un canal et créer une annonce (variable `MIN_CHANNEL_SUBSCRIBERS`).
-- Prix GRAM au cours du marché : le vendeur fixe le prix en FCFA, le prix en GRAM est recalculé toutes les 10 min
-  (tonapi.io, secours CoinGecko) puis figé sur la transaction à l'achat. Nouvelle colonne `listings.price_xaf`
-  (ajoutée automatiquement, voir MIGRATION_v28.sql). Variables optionnelles : `GRAM_RATE_REFRESH_SECONDS` (600),
-  `GRAM_XAF_RATE` (cours manuel en FCFA pour 1 GRAM). `GET /rates` expose `gram.xaf_per_gram`.
+# v28 — MoneyFusion remplace JessiKaPay (tous pays et réseaux)
+
+- **Retraits Mobile Money** : l'utilisateur choisit son PAYS puis son RÉSEAU (MTN, Airtel,
+  Orange, Moov, Wave…) et saisit son numéro. La liste vient de MoneyFusion
+  (`GET /withdrawals/methods`), vérifiée aussi côté serveur à chaque retrait.
+- **Dépôts** : page de paiement MoneyFusion ; wallet crédité du montant NET confirmé.
+- Retrait asynchrone : suivi automatique par jeton (terminé / échoué / en attente).
+- Webhook `/webhooks/moneyfusion/<secret>` (non signé : sert de simple déclencheur).
+- Commissions NexMarket versées sur un compte Mobile Money (`NEXA_PAYOUT_*`).
+- Devises non CFA : masquées sans taux (`MONEYFUSION_FX_TO_XAF`).
+- Bot : `/retrait` remplace `/jessikapay` ; plus de compte externe à créer.
+- Admin : destination (pays · réseau · numéro) + bouton « Revérifier ».
+- Supprimés : jessikapay.py, jessikapay_service.py, webhook_security.py,
+  deposit_service.py, withdrawal_service.py (doublons inutilisés).
+- Voir MONEYFUSION_GUIDE.md.
+
+# v30 — Achat direct MoneyFusion + versement automatique au vendeur
+- `POST /deposits/purchase` : paiement direct d'une annonce ; achat créé automatiquement après
+  confirmation, fonds bloqués (escrow habituel).
+- Annonce : numéro + réseau Mobile Money du vendeur ; versement automatique après libération admin.
+- Inscription 3 étapes + dépôt/retrait 5 étapes ; pays et numéro du compte réutilisés (plus redemandés).
+- Nouvelles colonnes (auto) : deposits.purpose/listing_id, listings.payout_*, transactions.seller_payout_started_at.
