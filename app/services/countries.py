@@ -1,10 +1,10 @@
 """
-Pays pris en charge pour les dépôts JessiKaPay.
+Pays et indicatifs téléphoniques.
 
-JessiKaPay EXIGE le champ `country` pour créer une demande de dépôt
-(sinon HTTP 422 « body.country : Field required »). La liste correspond
-à celle de l'application JessiKaPay ; les codes sont des codes ISO 3166-1
-alpha-2, comme l'ancien code de NexMarket.
+La liste des pays/réseaux DISPONIBLES pour retirer vient de MoneyFusion
+(voir app/services/moneyfusion.py) ; cette table sert à connaître le nom
+et l'indicatif d'un pays (pour nettoyer un numéro saisi avec « + » ou
+« 00 ») et de liste de secours pour les dépôts. Codes ISO 3166-1 alpha-2.
 """
 
 from __future__ import annotations
@@ -32,11 +32,33 @@ COUNTRIES: list[tuple[str, str, str]] = [
     ("GW", "Guinée-Bissau", "245"),
 ]
 
+# Pays supplémentaires que MoneyFusion peut proposer (indicatif seulement :
+# un pays n'est utilisable que s'il figure dans la liste de MoneyFusion).
+_EXTRA: dict[str, tuple[str, str]] = {
+    "RW": ("Rwanda", "250"),
+    "NG": ("Nigeria", "234"),
+    "UG": ("Ouganda", "256"),
+    "TZ": ("Tanzanie", "255"),
+    "ZM": ("Zambie", "260"),
+    "SL": ("Sierra Leone", "232"),
+    "LR": ("Libéria", "231"),
+    "MR": ("Mauritanie", "222"),
+    "BI": ("Burundi", "257"),
+    "MG": ("Madagascar", "261"),
+    "GM": ("Gambie", "220"),
+}
+
 _BY_CODE = {code: (name, dial) for code, name, dial in COUNTRIES}
+_ALL = {**_EXTRA, **_BY_CODE}
+
+
+def country_name(code: str) -> str | None:
+    entry = _ALL.get((code or "").upper())
+    return entry[0] if entry else None
 
 
 def country_dial(code: str) -> str | None:
-    entry = _BY_CODE.get((code or "").upper())
+    entry = _ALL.get((code or "").upper())
     return entry[1] if entry else None
 
 

@@ -13,7 +13,7 @@ from app.models.platform import CommissionPayout, PlatformLedger, PlatformWallet
 from app.models.transaction import Transaction
 from app.models.user import User
 from app.services.chat_service import open_transaction_chat
-from app.services import gram_rate, ton
+from app.services import ton
 from app.services.notification_service import notify_user_id
 from app.services.wallet_service import (
     DuplicateOperationError,
@@ -157,18 +157,6 @@ class TransactionService:
             )
 
         price = self._money(listing.price)
-
-        # Annonce GRAM à prix en FCFA : montant recalculé au cours du marché
-        # (relu toutes les 10 min), puis figé sur cette transaction.
-        if (
-            listing.currency.upper() == "GRAM"
-            and listing.price_xaf is not None
-        ):
-            try:
-                price, _rate = await gram_rate.quote(listing.price_xaf)
-            except gram_rate.GramRateUnavailable as exc:
-                raise TransactionServiceError(str(exc)) from exc
-            price = self._money(price)
 
         if price <= 0:
             raise TransactionServiceError(
@@ -407,11 +395,11 @@ class TransactionService:
     # PAIEMENT PAR WALLET (escrow)
     # ============================================================
     #
-    # Modèle : l'acheteur recharge son wallet (dépôt JessiKaPay), puis
+    # Modèle : l'acheteur recharge son wallet (dépôt MoneyFusion), puis
     # le prix est BLOQUÉ dans son wallet à l'achat. Il n'est versé au
     # wallet du vendeur (moins la commission) qu'à la fin de la
     # période de protection, ou remboursé en cas de litige.
-    # JessiKaPay ne sert qu'aux dépôts et aux retraits.
+    # MoneyFusion ne sert qu'aux dépôts et aux retraits.
 
     async def pay_with_wallet(
         self,
@@ -952,7 +940,7 @@ class TransactionService:
 
         self.db.add(ledger)
 
-        # La commission doit arriver sur le compte JessiKaPay de
+        # La commission doit arriver sur le compte Mobile Money de
         # NexMarket : on enregistre l'ordre de versement dans le MÊME
         # commit que la vente (la tâche de fond l'exécute ensuite).
         if currency != "GRAM":  # en GRAM, la commission reste dans le portefeuille de NexMarket

@@ -269,7 +269,7 @@ async def _converse(transaction_id: int, trigger: str, trigger_message_id: int |
                 ]
 
                 buyer, seller = users.get(transaction.buyer_id), users.get(transaction.seller_id)
-                provider = "GRAM (blockchain TON)" if (transaction.currency or "").upper() == "GRAM" else "JessiKaPay (FCFA)"
+                provider = "GRAM (blockchain TON)" if (transaction.currency or "").upper() == "GRAM" else "Mobile Money (FCFA)"
                 context = logic.build_context(
                     reference=transaction.reference,
                     status=transaction.status,

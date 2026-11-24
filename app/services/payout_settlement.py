@@ -1,10 +1,10 @@
 """
-Finalisation des retraits SANS webhook.
+Finalisation des retraits.
 
-Les fonds d'un retrait sont BLOQUÉS dans le wallet dès la demande. Une fois
-le payout accepté par JessiKaPay, ils sont consommés (retrait terminé) ;
-s'il est refusé, ils sont rendus. Un retrait au statut inconnu (timeout)
-reste « processing » jusqu'à décision d'un administrateur.
+Les fonds d'un retrait sont BLOQUÉS dans le wallet dès la demande. Quand
+MoneyFusion confirme le succès (voir payout_sync.py), ils sont consommés
+(retrait terminé) ; en cas d'échec, ils sont rendus. Un retrait au statut
+inconnu (timeout) reste « processing » jusqu'à décision d'un administrateur.
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ async def complete_withdrawal(db: AsyncSession, withdrawal: Withdrawal) -> None:
             user_id=withdrawal.user_id,
             amount=Decimal(str(withdrawal.amount)),
             reference=f"{withdrawal.reference}-CONSUME",
-            description="Retrait JessiKaPay effectué",
+            description="Retrait Mobile Money effectué",
         )
     except DuplicateOperationError:
         pass  # déjà consommé lors d'un passage interrompu

@@ -506,7 +506,12 @@ async def _send_listing_proofs(chat_ids: list[int], text: str, photos: list[byte
 
     for chat_id in chat_ids:
         try:
-            if len(photos) == 1:
+            if not photos:
+                await asyncio.wait_for(
+                    bot.send_message(chat_id=chat_id, text=text[:4000]),
+                    timeout=30,
+                )
+            elif len(photos) == 1:
                 await asyncio.wait_for(
                     bot.send_photo(chat_id=chat_id, photo=photos[0], caption=text[:1000]),
                     timeout=30,

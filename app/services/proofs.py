@@ -19,16 +19,20 @@ def _detect_type(data: bytes) -> str | None:
     return None
 
 
-def decode_proofs(images: list[str]) -> list[tuple[str, bytes]]:
+def decode_proofs(images: list[str], *, required: bool = True) -> list[tuple[str, bytes]]:
     """
     Décode les images envoyées par la Mini App (data URL ou base64).
     Le type est lu dans les OCTETS de l'image (jamais déclaré par le client).
     Lève ValueError avec un message lisible.
     """
 
-    # Preuves facultatives : plus aucune photo exigée du vendeur.
     if not images:
-        return []
+        if not required:
+            return []
+        raise ValueError(
+            "Ajoute au moins une photo de preuve (capture des statistiques "
+            "de ton canal) : elle est envoyée à l'administrateur."
+        )
 
     if len(images) > MAX_PROOFS:
         raise ValueError(f"Maximum {MAX_PROOFS} photos de preuve.")

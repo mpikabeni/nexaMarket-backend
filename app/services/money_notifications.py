@@ -2,7 +2,7 @@
 Notifications du bot pour les dépôts et les retraits.
 
 Principe : plus aucune validation manuelle. Dès que l'utilisateur a
-confirmé sa demande ET que JessiKaPay a confirmé l'opération, le bot
+confirmé sa demande ET que MoneyFusion a confirmé l'opération, le bot
 écrit à l'utilisateur (et envoie une copie d'information aux admins).
 Toutes les fonctions sont « best effort » : une notification ratée ne
 casse jamais une opération d'argent.
@@ -57,7 +57,7 @@ async def _safe(coro) -> None:
 # ============================================================
 
 async def deposit_requested(db, deposit) -> None:
-    """L'utilisateur a confirmé sa demande : on attend JessiKaPay."""
+    """L'utilisateur a confirmé sa demande : on attend MoneyFusion."""
 
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
@@ -76,10 +76,10 @@ async def deposit_requested(db, deposit) -> None:
             f"Montant : {fmt_amount(deposit.amount, deposit.currency)}\n"
             f"Ton solde sera crédité de : "
             f"{fmt_amount(deposit.net_amount_credited if deposit.net_amount_credited is not None else deposit.amount, deposit.currency)} "
-            "(après les frais JessiKaPay)\n"
+            "(après les frais)\n"
             f"Référence : {deposit.reference}\n\n"
-            "Termine le paiement Mobile Money. Dès que JessiKaPay le "
-            "confirme, ton solde est crédité automatiquement et tu es "
+            "Termine le paiement Mobile Money. Dès que le paiement est "
+            "confirmé, ton solde est crédité automatiquement et tu es "
             "prévenu ici.",
             markup,
         )
@@ -99,7 +99,7 @@ async def deposit_paid(db, deposit) -> None:
             db,
             deposit.user_id,
             "✅ Dépôt confirmé\n\n"
-            f"Tu as confirmé le dépôt et JessiKaPay a validé le paiement.\n"
+            f"Tu as confirmé le dépôt et le paiement a été validé.\n"
             f"💰 {amount} ont été ajoutés à ton solde NexMarket.\n\n"
             f"Référence : {deposit.reference}",
         )
@@ -139,6 +139,16 @@ async def deposit_failed(db, deposit) -> None:
 # RETRAITS
 # ============================================================
 
+def _destination(withdrawal) -> str:
+    """Pays · réseau · numéro du retrait (ou ancien numéro JP des retraits d'avant)."""
+
+    if getattr(withdrawal, "payout_method", None):
+        country = (withdrawal.payout_country or "").upper()
+        return f"{country} · {withdrawal.payout_method} · {withdrawal.payout_phone or ''}".strip(" ·")
+
+    return getattr(withdrawal, "jessikapay_jp_number", None) or "—"
+
+
 async def withdrawal_completed(db, withdrawal) -> None:
     amount = fmt_amount(withdrawal.amount, withdrawal.currency)
 
@@ -147,8 +157,8 @@ async def withdrawal_completed(db, withdrawal) -> None:
             db,
             withdrawal.user_id,
             "✅ Retrait effectué\n\n"
-            "Tu as confirmé le retrait et JessiKaPay l'a exécuté.\n"
-            f"💸 {amount} envoyés vers {withdrawal.jessikapay_jp_number}.\n\n"
+            "Tu as confirmé le retrait et il a été exécuté.\n"
+            f"💸 {amount} envoyés vers {_destination(withdrawal)}.\n\n"
             f"Référence : {withdrawal.reference}",
         )
     )
@@ -159,7 +169,7 @@ async def withdrawal_completed(db, withdrawal) -> None:
             "💸 Retrait effectué automatiquement\n\n"
             f"Utilisateur : {await _who(db, withdrawal.user_id)}\n"
             f"Montant : {amount}\n"
-            f"Compte : {withdrawal.jessikapay_jp_number}\n"
+            f"Compte : {_destination(withdrawal)}\n"
             f"Référence : {withdrawal.reference}\n\n"
             "Aucune action requise.",
         )
@@ -182,7 +192,7 @@ async def withdrawal_failed(db, withdrawal, reason: str = "") -> None:
 
 async def withdrawal_processing(db, withdrawal, *, needs_admin: bool) -> None:
     """Statut incertain : l'utilisateur est prévenu ; l'admin n'est
-    alerté que si JessiKaPay n'a pas pu confirmer (cas exceptionnel)."""
+    alerté que si MoneyFusion n'a pas pu confirmer (cas exceptionnel)."""
 
     await _safe(
         notify_user_id(
@@ -191,7 +201,7 @@ async def withdrawal_processing(db, withdrawal, *, needs_admin: bool) -> None:
             "⏳ Retrait en cours de traitement\n\n"
             f"Montant : {fmt_amount(withdrawal.amount, withdrawal.currency)}\n"
             f"Référence : {withdrawal.reference}\n\n"
-            "JessiKaPay n'a pas encore confirmé. Tes fonds restent bloqués "
+            "Le retrait n'est pas encore confirmé. Tes fonds restent bloqués "
             "en sécurité et tu seras prévenu ici dès la confirmation.",
         )
     )
@@ -200,7 +210,7 @@ async def withdrawal_processing(db, withdrawal, *, needs_admin: bool) -> None:
         await _safe(
             notify_admins(
                 db,
-                "⚠️ Retrait à vérifier (réponse JessiKaPay incertaine)\n\n"
+                "⚠️ Retrait à vérifier (réponse MoneyFusion incertaine)\n\n"
                 f"Utilisateur : {await _who(db, withdrawal.user_id)}\n"
                 f"Montant : {fmt_amount(withdrawal.amount, withdrawal.currency)}\n"
                 f"Référence : {withdrawal.reference}\n\n"
@@ -210,14 +220,14 @@ async def withdrawal_processing(db, withdrawal, *, needs_admin: bool) -> None:
 
 
 # ============================================================
-# COMMISSIONS NEXMARKET -> compte JessiKaPay
+# COMMISSIONS NEXMARKET -> compte MoneyFusion
 # ============================================================
 
 async def commission_sent(db, payout) -> None:
     await _safe(
         notify_admins(
             db,
-            "💰 Commission versée sur votre compte JessiKaPay\n\n"
+            "💰 Commission versée sur votre compte MoneyFusion\n\n"
             f"Montant : {fmt_amount(payout.amount, payout.currency)}\n"
             f"Référence : {payout.reference}",
         )
@@ -235,19 +245,19 @@ async def commission_alert(db, payout) -> None:
             f"Référence : {payout.reference}\n"
             f"Statut : {payout.status}\n"
             f"Détail : {payout.failure_reason or '-'}\n\n"
-            "Vérifiez dans JessiKaPay, puis tranchez dans la console "
+            "Vérifiez dans MoneyFusion, puis tranchez dans la console "
             "(Commissions).",
         )
     )
 
 
 async def deposit_attention(db, deposit, reason: str) -> None:
-    """JessiKaPay indique « payé » mais le wallet n'a pas pu être crédité."""
+    """MoneyFusion indique « payé » mais le wallet n'a pas pu être crédité."""
 
     await _safe(
         notify_admins(
             db,
-            "⚠️ Dépôt payé chez JessiKaPay mais NON crédité\n\n"
+            "⚠️ Dépôt payé chez MoneyFusion mais NON crédité\n\n"
             f"Montant demandé : {fmt_amount(deposit.amount, deposit.currency)}\n"
             f"Référence : {deposit.reference}\n"
             f"Raison : {reason}\n\n"

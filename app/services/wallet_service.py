@@ -145,7 +145,7 @@ class WalletService:
         Ajoute un montant au solde disponible.
 
         Utilisé notamment après confirmation réelle
-        d'un dépôt JessiKaPay.
+        d'un dépôt MoneyFusion.
         """
 
         amount = self._money(amount)

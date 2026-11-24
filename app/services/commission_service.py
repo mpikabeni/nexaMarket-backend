@@ -1,21 +1,23 @@
 """
-Versement des commissions NexMarket vers le compte JessiKaPay.
+Versement des commissions NexMarket vers le compte Mobile Money de la plateforme.
 
-Après chaque transaction terminée, la commission (5 %) est versée sur
-NEXA_JP_NUMBER via un payout JessiKaPay. Règles de sécurité :
+Après chaque transaction terminée, la commission (5 %) est versée au compte
+configuré (NEXA_PAYOUT_COUNTRY / NEXA_PAYOUT_METHOD / NEXA_PAYOUT_PHONE) via un
+payout MoneyFusion. Règles de sécurité :
 
 - une seule ligne par transaction (pas de double versement) ;
 - le statut « sending » est enregistré AVANT l'appel au prestataire :
   si le serveur s'arrête en plein appel, on ne renvoie jamais seul ;
-- timeout / erreur 5xx = issue inconnue -> « processing » + alerte admin,
-  jamais de nouvel envoi automatique ;
-- refus explicite (4xx) : 5 essais maximum, puis alerte admin.
+- demande acceptée -> « processing » avec le jeton de suivi ; la confirmation
+  (versée / échec) est relue plus tard par app/services/payout_sync.py ;
+- timeout / erreur 5xx / réponse sans jeton = issue inconnue -> « processing »
+  SANS jeton + alerte admin, jamais de nouvel envoi automatique ;
+- refus explicite : 5 essais maximum, puis alerte admin.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from decimal import ROUND_DOWN, Decimal
 
 from sqlalchemy import select
@@ -23,21 +25,40 @@ from sqlalchemy import select
 from app.config import settings
 from app.models.platform import CommissionPayout
 from app.services import money_notifications
-from app.services.jessikapay import JessiKaPayError, jessikapay_service
+from app.services.countries import local_phone
+from app.services.jessikapay import jessikapay_service
+from app.services.moneyfusion import MoneyFusionError
 
 logger = logging.getLogger("nexmarket.commissions")
 
 MAX_ATTEMPTS = 5
-FAILED_STATUSES = {"failed", "rejected", "cancelled", "canceled", "error"}
+
+
+def _webhook_url() -> str:
+    base = (settings.PUBLIC_URL or "").strip().rstrip("/")
+    secret = (settings.MONEYFUSION_WEBHOOK_SECRET or "").strip()
+
+    return f"{base}/webhooks/moneyfusion/{secret}" if base and secret else ""
+
+
+async def _target() -> dict | None:
+    """Numéro JP de NexMarket (NEXA_JP_NUMBER), ou None si non configuré."""
+
+    from app.services.jessikapay import normalize_jp
+
+    jp = normalize_jp(settings.NEXA_JP_NUMBER)
+
+    if not jp:
+        return None  # non configuré : rien n'est envoyé
+
+    return {"jp": jp}
 
 
 async def settle_pending_commissions(session_factory, *, limit: int = 20) -> int:
-    """Verse les commissions en attente. Renvoie le nombre versé."""
+    """Soumet les commissions en attente. Renvoie le nombre de versements demandés."""
 
-    jp_number = (settings.NEXA_JP_NUMBER or "").strip()
-
-    if not jp_number:
-        return 0  # non configuré : rien n'est envoyé
+    if not (settings.NEXA_PAYOUT_COUNTRY and settings.NEXA_PAYOUT_METHOD and settings.NEXA_PAYOUT_PHONE):
+        return 0
 
     async with session_factory() as db:
         ids = (
@@ -52,11 +73,19 @@ async def settle_pending_commissions(session_factory, *, limit: int = 20) -> int
             )
         ).scalars().all()
 
+    if not ids:
+        return 0
+
+    target = await _target()
+
+    if target is None:
+        return 0
+
     sent = 0
 
     for payout_id in ids:
         try:
-            if await _send_one(session_factory, payout_id, jp_number):
+            if await _send_one(session_factory, payout_id, target):
                 sent += 1
         except Exception:
             logger.exception("Commission %s : erreur inattendue", payout_id)
@@ -64,7 +93,7 @@ async def settle_pending_commissions(session_factory, *, limit: int = 20) -> int
     return sent
 
 
-async def _send_one(session_factory, payout_id: int, jp_number: str) -> bool:
+async def _send_one(session_factory, payout_id: int, target: dict) -> bool:
     async with session_factory() as db:
         row = (
             await db.execute(
@@ -82,29 +111,25 @@ async def _send_one(session_factory, payout_id: int, jp_number: str) -> bool:
         row.attempts = (row.attempts or 0) + 1
         await db.commit()
 
-        # L'API JessiKaPay n'accepte que des FCFA entiers : on verse la
-        # partie entière (moins d'1 XAF reste sur le solde de l'app).
+        # Montants entiers uniquement : moins d'1 XAF reste sur le solde de l'app.
         whole = int(Decimal(row.amount).to_integral_value(rounding=ROUND_DOWN))
-
         if whole <= 0:
             row.status = "sent"
-            row.failure_reason = "Commission inférieure à 1 XAF : rien à verser."
+            row.failure_reason = "Commission inférieure à 1 unité : rien à verser."
             await db.commit()
             return False
 
-        payload = {
-            "jp_number": jp_number,
-            "amount": whole,
-            "reference": row.reference,
-            "description": f"Commission NexMarket {row.reference}",
-        }
-
         try:
-            response = await jessikapay_service.payout(payload)
+            response = await jessikapay_service.payout(
+                jp_number=target["jp"],
+                amount=whole,
+                reference=row.reference,
+                description="Commission NexMarket",
+            )
 
-        except JessiKaPayError as exc:
+        except MoneyFusionError as exc:
             if exc.ambiguous:
-                row.status = "processing"
+                row.status = "processing"  # sans jeton : un admin vérifie
                 row.failure_reason = f"Statut inconnu, à vérifier : {exc}"
                 await db.commit()
                 await money_notifications.commission_alert(db, row)
@@ -119,30 +144,9 @@ async def _send_one(session_factory, payout_id: int, jp_number: str) -> bool:
 
             return False
 
-        provider_status = str(
-            (response or {}).get("status") or "completed"
-        ).lower()
-
-        if provider_status in FAILED_STATUSES:
-            row.status = "pending" if row.attempts < MAX_ATTEMPTS else "failed"
-            row.failure_reason = str(
-                (response or {}).get("message")
-                or (response or {}).get("reason")
-                or f"Payout {provider_status}."
-            )[:500]
-            await db.commit()
-
-            if row.status == "failed":
-                await money_notifications.commission_alert(db, row)
-
-            return False
-
-        tx_id = (response or {}).get("transaction_id")
-        row.jessikapay_transaction_id = str(tx_id) if tx_id else None
-        row.status = "sent"
+        # Demande acceptée : la confirmation arrive plus tard (payout_sync).
+        row.jessikapay_transaction_id = response["token"]
+        row.status = "processing"
         row.failure_reason = None
-        row.sent_at = datetime.utcnow()
         await db.commit()
-
-        await money_notifications.commission_sent(db, row)
         return True

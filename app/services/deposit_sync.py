@@ -1,18 +1,19 @@
 """
-Vérification des dépôts SANS webhook.
+Vérification des dépôts MoneyFusion.
 
-JessiKaPay n'appelle plus NexMarket : c'est NexMarket qui interroge le
-point d'état du prestataire (GET /external/v1/deposit-request/{id}/status)
+NexMarket interroge lui-même le statut du paiement
+(GET /paiementNotif/{token}) :
 - à la demande de l'utilisateur (POST /deposits/{id}/check) ;
-- en tâche de fond (toutes les 30 secondes, voir main.py).
+- en tâche de fond (toutes les 30 secondes, voir main.py) ;
+- quand un webhook arrive (il ne fait que déclencher cette vérification).
+Le wallet n'est JAMAIS crédité d'après le contenu d'un webhook.
 """
 
 from __future__ import annotations
 
 import logging
-import os
 from datetime import datetime, timedelta
-from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal, InvalidOperation
+from decimal import ROUND_FLOOR, Decimal, InvalidOperation
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models.deposit import Deposit
 from app.services import money_notifications
-from app.services.jessikapay import JessiKaPayError, jessikapay_service
+from app.services.jessikapay import jessikapay_service
+from app.services.moneyfusion import MoneyFusionError
 from app.services.wallet_service import (
     DuplicateOperationError,
     WalletService,
@@ -29,22 +31,15 @@ from app.services.wallet_service import (
 
 logger = logging.getLogger("nexmarket.deposits")
 
-# Statuts qui prouvent que l'argent est réellement reçu. Liste volontairement
-# stricte (argent réel) : des mots vagues comme « approved » ou « validated »
-# peuvent désigner une étape intermédiaire. Si JessiKaPay utilise un autre mot
-# pour « payé », ajoutez-le dans la variable Render JESSIKAPAY_PAID_STATUSES
-# (séparés par des virgules) ; le statut brut reçu est écrit dans les logs.
-PAID_STATUSES = {"paid", "completed", "success", "successful", "succeeded"} | {
-    item.strip().lower()
-    for item in os.environ.get("JESSIKAPAY_PAID_STATUSES", "").split(",")
-    if item.strip()
-}
-FAILED_STATUSES = {"failed", "failure", "expired", "cancelled", "canceled", "rejected", "declined", "refused"}
+# Statuts normalisés par app/services/moneyfusion.py : paid / pending / failed /
+# unknown. Seul « paid » prouve que l'argent est réellement reçu.
+PAID_STATUSES = {"paid"}
+FAILED_STATUSES = {"failed", "expired", "cancelled", "rejected"}
 FINAL_STATUSES = {"paid", "failed", "expired", "cancelled", "rejected", "amount_mismatch"}
 
 
 # Statuts « en cours » normaux : inutile de les journaliser à chaque passage.
-WAITING_STATUSES = {"", "pending", "reviewing", "waiting", "created", "processing", "initiated", "in_progress", "awaiting_payment", "unpaid"}
+WAITING_STATUSES = {"", "pending", "unknown", "reviewing", "awaiting_payment"}
 
 
 def _unwrap(response: dict) -> dict:
@@ -75,7 +70,7 @@ def _money(value) -> Decimal | None:
 
 
 async def _needs_attention(db, deposit, reason: str) -> None:
-    """Dépôt PAYÉ chez JessiKaPay mais pas crédité : on garde la raison et on
+    """Dépôt PAYÉ chez MoneyFusion mais pas crédité : on garde la raison et on
     prévient les admins dans le bot (une seule fois par raison)."""
 
     if deposit.failure_reason == reason:
@@ -87,29 +82,28 @@ async def _needs_attention(db, deposit, reason: str) -> None:
 
 
 def split_deposit(amount) -> tuple[Decimal, Decimal]:
-    """(commission JessiKaPay, montant NET crédité au wallet) en XAF entiers.
+    """(frais estimés, montant NET estimé) en XAF entiers.
 
-    JessiKaPay prélève 6 % sur ce que NexMarket reçoit : le wallet n'est
-    crédité que du net. Arrondi toujours en faveur de la solvabilité (le net
-    est arrondi vers le bas : jamais plus que ce que NexMarket reçoit).
+    ESTIMATION affichée avant le paiement. Au moment du crédit, le montant
+    réellement crédité est celui que MoneyFusion confirme (champ « Montant »).
+    Net arrondi vers le bas : jamais plus que ce que NexMarket reçoit.
     """
 
     total = Decimal(str(amount))
-    rate = Decimal(str(settings.JESSIKAPAY_DEPOSIT_COMMISSION_RATE))
+    rate = Decimal(str(settings.JESSIKAPAY_COMMISSION_RATE))
     net = (total * (Decimal(1) - rate)).to_integral_value(rounding=ROUND_FLOOR)
     return total - net, net
 
 
 def total_to_pay(amount) -> Decimal:
-    """Montant approximatif payé par l'utilisateur (frais Mobile Money +3 %)."""
+    """L'utilisateur paie exactement le montant choisi ; les frais sont déduits."""
 
-    rate = Decimal(str(settings.JESSIKAPAY_USER_FEE_RATE))
-    return (Decimal(str(amount)) * (Decimal(1) + rate)).to_integral_value(rounding=ROUND_CEILING)
+    return Decimal(str(amount))
 
 
 async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False) -> str:
     """
-    Interroge JessiKaPay et crédite le wallet si le dépôt est payé.
+    Interroge MoneyFusion et crédite le wallet si le dépôt est payé.
     Renvoie le statut du dépôt après vérification. Idempotent.
     """
 
@@ -131,10 +125,10 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
         return deposit.status
 
     try:
-        response = await jessikapay_service.get_deposit(
+        response = await jessikapay_service.get_payment_status(
             deposit.jessikapay_request_id
         )
-    except JessiKaPayError as exc:
+    except MoneyFusionError as exc:
         # Prestataire indisponible : on réessaiera au prochain passage.
         logger.warning("Dépôt %s : vérification impossible : %s", deposit.reference, exc)
         return deposit.status
@@ -148,7 +142,7 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
     if provider_status not in PAID_STATUSES and provider_status not in FAILED_STATUSES \
             and provider_status not in WAITING_STATUSES:
         logger.warning(
-            "Dépôt %s : statut JessiKaPay non reconnu %r — réponse brute : %s",
+            "Dépôt %s : statut MoneyFusion non reconnu %r — réponse brute : %s",
             deposit.reference, provider_status, response,
         )
 
@@ -174,7 +168,7 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
         return deposit.status
 
     if provider_status not in PAID_STATUSES:
-        # Étapes intermédiaires de JessiKaPay : on les garde pour savoir où
+        # Étapes intermédiaires de MoneyFusion : on les garde pour savoir où
         # en est l'utilisateur (lien pas ouvert / revue / paiement en cours).
         if provider_status in {"pending", "reviewing", "awaiting_payment"} \
                 and deposit.status != provider_status:
@@ -197,29 +191,29 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
         return "paid"
 
     expected = _money(deposit.amount)
-    reported = _money(response.get("amount")) if response.get("amount") is not None else None
 
-    # Montant NET à créditer (après la commission JessiKaPay de 6 %).
-    if deposit.net_amount_credited is None or deposit.commission_amount is None:
-        deposit.commission_amount, deposit.net_amount_credited = split_deposit(expected)
+    # La référence renvoyée par MoneyFusion doit être la nôtre (le jeton est
+    # propre à ce dépôt : une différence signale une anomalie).
+    provider_reference = response.get("reference")
 
-    net = _money(deposit.net_amount_credited)
-
-    if net is None or net <= 0:
-        await _needs_attention(db, deposit, "Montant net nul, aucun crédit possible.")
-        return deposit.status
-
-    # On ne crédite jamais plus que ce que JessiKaPay déclare. Selon la
-    # version de l'API, « amount » est le montant demandé, le total payé ou
-    # le net : on accepte tout montant >= au net à créditer.
-    if reported is not None and reported < net:
+    if provider_reference and provider_reference != deposit.reference:
         deposit.status = "amount_mismatch"
         await _needs_attention(
             db,
             deposit,
-            f"Montant incohérent : JessiKaPay indique {reported}, "
-            f"net à créditer {net} (demandé {expected}).",
+            f"Référence incohérente : MoneyFusion indique {provider_reference}, "
+            f"attendu {deposit.reference}.",
         )
+        return deposit.status
+
+    # Montant NET : JessiKaPay crédite NexMarket du montant demandé moins 6 %.
+    # Le champ « amount » de son statut est le montant DEMANDÉ : on ne s'en sert
+    # pas pour créditer (sinon 6 % de trop).
+    deposit.commission_amount, deposit.net_amount_credited = split_deposit(expected)
+    net = _money(deposit.net_amount_credited)
+
+    if net is None or net <= 0:
+        await _needs_attention(db, deposit, "Montant net nul, aucun crédit possible.")
         return deposit.status
 
     try:
@@ -229,7 +223,7 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
             reference=deposit.reference,
             operation_type="deposit",
             provider_reference=deposit.jessikapay_request_id,
-            description="Dépôt confirmé par JessiKaPay (net après frais)",
+            description="Paiement confirmé (net après frais)",
         )
     except DuplicateOperationError:
         pass  # déjà crédité lors d'un passage interrompu
@@ -243,11 +237,85 @@ async def sync_deposit(db: AsyncSession, deposit_id: int, *, force: bool = False
     deposit.paid_at = datetime.utcnow()
     await db.commit()
 
-    # Utilisateur + JessiKaPay ont confirmé : le bot prévient, sans
+    # Utilisateur + MoneyFusion ont confirmé : le bot prévient, sans
     # aucune validation manuelle.
-    await money_notifications.deposit_paid(db, deposit)
+    if deposit.purpose == "purchase" and deposit.listing_id:
+        await _finish_purchase(db, deposit)
+    else:
+        await money_notifications.deposit_paid(db, deposit)
 
     return "paid"
+
+
+async def _finish_purchase(db, deposit) -> None:
+    """Paiement direct confirmé : crée l'achat et bloque les fonds (escrow habituel).
+
+    Si l'achat est impossible (annonce vendue entre-temps...), l'argent reste
+    DISPONIBLE dans le wallet de l'acheteur : rien n'est perdu.
+    """
+
+    from app.services.notification_service import notify_user_id
+    from app.services.transaction_service import TransactionService
+
+    # Valeurs lues AVANT l'achat : après un rollback, l'objet est invalidé.
+    user_id = deposit.user_id
+    listing_id = deposit.listing_id
+    reference = deposit.reference
+    net_credited = deposit.net_amount_credited
+
+    try:
+        transaction = await TransactionService(db).purchase(
+            buyer_id=user_id,
+            listing_id=listing_id,
+        )
+        message = (
+            "✅ Paiement confirmé\n\n"
+            f"Tes fonds sont bloqués en sécurité pour la transaction {transaction.reference}. "
+            "Un administrateur va prendre en charge ton achat."
+        )
+    except Exception as exc:
+        await db.rollback()
+        logger.warning("Achat direct %s impossible : %s", reference, exc)
+
+        from app.models.listing import Listing
+
+        listing = (
+            await db.execute(select(Listing).where(Listing.id == listing_id))
+        ).scalar_one_or_none()
+        net = _money(net_credited) if net_credited is not None else None
+        short = bool(
+            listing is not None and net is not None and net < _money(listing.price)
+        )
+
+        if short:
+            # Les frais réels de MoneyFusion dépassent l'estimation : achat bloqué.
+            message = (
+                "✅ Paiement reçu, mais l'achat n'a pas pu être créé : "
+                "le montant reçu après frais est inférieur au prix du canal.\n\n"
+                "Ton argent est disponible dans ton solde NexMarket. "
+                "Aucun montant n'est perdu."
+            )
+            deposit = (
+                await db.execute(select(Deposit).where(Deposit.reference == reference))
+            ).scalar_one()
+            await _needs_attention(
+                db,
+                deposit,
+                f"Achat direct bloqué : net reçu {net} XAF < prix {listing.price} XAF. "
+                "Les frais MoneyFusion dépassent MONEYFUSION_DEPOSIT_FEE_RATE : "
+                "augmentez ce taux.",
+            )
+        else:
+            message = (
+                "✅ Paiement reçu, mais l'achat n'a pas pu être créé "
+                "(annonce déjà vendue ou indisponible).\n\n"
+                "Ton argent est disponible dans ton solde NexMarket."
+            )
+
+    try:
+        await notify_user_id(db, user_id, message)
+    except Exception:
+        logger.exception("Notification d'achat non envoyée")
 
 
 async def sync_pending_deposits(session_factory, *, max_age_hours: int = 48, limit: int = 50) -> int:
@@ -286,7 +354,7 @@ async def credit_deposit_manually(db: AsyncSession, deposit_id: int, admin_id: i
     L'administrateur NE crédite PLUS d'argent lui-même.
 
     Cette fonction force seulement une nouvelle vérification auprès de
-    JessiKaPay : le wallet n'est crédité que si JessiKaPay confirme le
+    MoneyFusion : le wallet n'est crédité que si MoneyFusion confirme le
     paiement (et pour un montant au moins égal au montant demandé).
     Sinon rien n'est crédité. Idempotent (référence unique).
     """
