@@ -57,7 +57,7 @@ logger = logging.getLogger("nexmarket.bot")
 telegram_service = TelegramService()
 
 FRONTEND_URL = (
-    settings.FRONTEND_URL or "https://nexamarketf.netlify.app"
+    settings.FRONTEND_URL or "https://nexamarke.netlify.app"
 ).rstrip("/")
 
 
@@ -75,12 +75,6 @@ def money(value, currency="XAF") -> str:
     return f"{text} {currency}"
 
 
-# Pour RETIRER de l'argent, l'utilisateur a besoin de son ID JessiKaPay
-# (JP-xxxxxx). Cet ID n'existe qu'après avoir démarré @JessiKaPayBot.
-JESSIKAPAY_BOT_USERNAME = "JessiKaPayBot"
-JESSIKAPAY_BOT_URL = f"https://t.me/{JESSIKAPAY_BOT_USERNAME}"
-
-
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
@@ -90,47 +84,22 @@ def main_keyboard() -> InlineKeyboardMarkup:
                     web_app=WebAppInfo(url=FRONTEND_URL),
                 )
             ],
-            [
-                InlineKeyboardButton(
-                    "💳 Démarrer JessiKaPay (pour retirer)",
-                    url=JESSIKAPAY_BOT_URL,
-                )
-            ],
         ]
     )
 
 
-def jessikapay_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    f"▶️ Démarrer @{JESSIKAPAY_BOT_USERNAME}",
-                    url=JESSIKAPAY_BOT_URL,
-                )
-            ],
-            [
-                InlineKeyboardButton(
-                    "🛒 Retour à NexMarket",
-                    web_app=WebAppInfo(url=FRONTEND_URL),
-                )
-            ],
-        ]
-    )
-
-
-JESSIKAPAY_HELP_TEXT = (
-    "💳 <b>Retirer ton argent : ton ID JessiKaPay</b>\n\n"
-    "Les retraits NexMarket sont envoyés vers ton compte "
-    "<b>JessiKaPay</b>. Pour l'avoir :\n\n"
-    f"1️⃣ Ouvre <b>@{JESSIKAPAY_BOT_USERNAME}</b> et appuie sur "
-    "<b>Démarrer</b> (<code>/start</code>).\n"
-    "2️⃣ Le bot te donne ton <b>ID JessiKaPay</b>, de la forme "
-    "<code>JP-123456</code>.\n"
-    "3️⃣ Dans NexMarket → Wallet → <b>Retirer</b>, colle cet ID, "
-    "appuie sur <b>Vérifier</b>, puis confirme.\n\n"
-    "⚠️ Sans avoir démarré @JessiKaPayBot, tu n'as pas d'ID et le "
-    "retrait est impossible. Les dépôts n'en ont pas besoin."
+# Aide au retrait : plus aucun compte externe à créer. On retire directement
+# vers son numéro Mobile Money (MTN, Airtel, Orange, Moov, Wave...).
+WITHDRAW_HELP_TEXT = (
+    "💸 <b>Retirer ton argent</b>\n\n"
+    "Les retraits NexMarket sont envoyés directement sur ton compte "
+    "<b>Mobile Money</b>, dans de nombreux pays et réseaux "
+    "(MTN, Airtel, Orange, Moov, Wave...).\n\n"
+    "1️⃣ Ouvre NexMarket → Wallet → <b>Retirer</b>.\n"
+    "2️⃣ Choisis ton <b>pays</b>, puis ton <b>réseau</b>.\n"
+    "3️⃣ Entre ton <b>numéro Mobile Money</b> et le montant, puis confirme.\n\n"
+    "Tu es prévenu ici dès que le retrait est effectué. "
+    "Si ton pays ou ton réseau n'apparaît pas, il n'est pas encore disponible."
 )
 
 
@@ -508,9 +477,8 @@ async def start_command(
             "🆔 <b>Votre NEXA ID</b>\n"
             f"<code>{nexa_id}</code>\n\n"
             "<b>Votre compte NexMarket est prêt.</b>\n\n"
-            "💳 <b>Pour retirer de l'argent</b>, démarrez d'abord "
-            f"<b>@{JESSIKAPAY_BOT_USERNAME}</b> : il vous donne votre "
-            "ID JessiKaPay (<code>JP-…</code>). Voir /jessikapay.\n\n"
+            "💸 <b>Retraits Mobile Money</b> dans plusieurs pays "
+            "et réseaux : voir /retrait.\n\n"
             "Propulsé par <b>NEXA</b>."
         )
 
@@ -577,7 +545,7 @@ async def help_command(
         "<b>/about</b> — informations sur NexMarket\n"
         "<b>/verify @canal</b> — vérifier un canal\n"
         "<b>/transaction NEX-...</b> — consulter une transaction\n"
-        "<b>/jessikapay</b> — obtenir ton ID JessiKaPay (retraits)\n\n"
+        "<b>/retrait</b> — comment retirer ton argent\n\n"
         "Les achats et ventes se poursuivent depuis la Mini App."
     )
 
@@ -589,10 +557,10 @@ async def help_command(
 
 
 # ============================================================
-# /JESSIKAPAY (aide au retrait)
+# /RETRAIT (aide au retrait)
 # ============================================================
 
-async def jessikapay_command(
+async def withdraw_help_command(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE,
 ) -> None:
@@ -601,9 +569,9 @@ async def jessikapay_command(
         return
 
     await update.message.reply_text(
-        JESSIKAPAY_HELP_TEXT,
+        WITHDRAW_HELP_TEXT,
         parse_mode=ParseMode.HTML,
-        reply_markup=jessikapay_keyboard(),
+        reply_markup=main_keyboard(),
         disable_web_page_preview=True,
     )
 
@@ -2052,8 +2020,8 @@ def build_application() -> Application:
 
     application.add_handler(
         CommandHandler(
-            ["jessikapay", "retrait"],
-            jessikapay_command,
+            ["retrait", "retraits", "withdraw"],
+            withdraw_help_command,
         )
     )
 

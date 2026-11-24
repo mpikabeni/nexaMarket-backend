@@ -33,7 +33,9 @@ from app.routes import (
 from app.services import gram_service
 from app.services.commission_service import settle_pending_commissions
 from app.services.deposit_sync import sync_pending_deposits
-from app.services.jessikapay import JessiKaPayError
+from app.services.moneyfusion import MoneyFusionError
+from app.services.payout_sync import sync_pending_payouts
+from app.services.seller_payout import auto_payout_sellers
 from app.services.transaction_service import (
     TransactionService,
     TransactionServiceError,
@@ -86,7 +88,7 @@ async def _maintenance_loop() -> None:
 
 
 # ============================================================
-# VÉRIFICATION DES DÉPÔTS (remplace le webhook JessiKaPay)
+# VÉRIFICATION DES DÉPÔTS (statut relu auprès de MoneyFusion)
 # ============================================================
 
 async def _deposit_sync_loop() -> None:
@@ -103,6 +105,27 @@ async def _deposit_sync_loop() -> None:
             logger.exception("Échec de la vérification des dépôts")
 
         await asyncio.sleep(DEPOSIT_SYNC_INTERVAL_SECONDS)
+
+
+# ============================================================
+# SUIVI DES RETRAITS ET COMMISSIONS (payout MoneyFusion asynchrone)
+# ============================================================
+
+async def _payout_sync_loop() -> None:
+    while True:
+        try:
+            changed = await sync_pending_payouts(AsyncSessionLocal)
+            changed += await auto_payout_sellers(AsyncSessionLocal)
+
+            if changed:
+                logger.info("%s retrait(s)/commission(s) mis à jour", changed)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Échec du suivi des retraits")
+
+        await asyncio.sleep(DEPOSIT_SYNC_INTERVAL_SECONDS * 2)
 
 
 # ============================================================
@@ -131,28 +154,7 @@ async def _gram_loop() -> None:
 
 
 # ============================================================
-# COURS DU GRAM : relu sur le marché toutes les 10 minutes
-# ============================================================
-
-async def _gram_rate_loop() -> None:
-    from app.services import gram_rate
-
-    while True:
-        try:
-            await gram_rate.get_rate(force=True)
-            changed = await gram_rate.refresh_listing_prices(AsyncSessionLocal)
-            if changed:
-                logger.info("Prix GRAM mis à jour sur %s annonce(s)", changed)
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("Échec de la mise à jour du cours du GRAM")
-
-        await asyncio.sleep(gram_rate.refresh_seconds())
-
-
-# ============================================================
-# VERSEMENT DES COMMISSIONS vers le compte JessiKaPay NexMarket
+# VERSEMENT DES COMMISSIONS vers le compte Mobile Money de NexMarket
 # ============================================================
 
 async def _commission_loop() -> None:
@@ -338,9 +340,9 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_bot_supervisor()),
         asyncio.create_task(_maintenance_loop()),
         asyncio.create_task(_deposit_sync_loop()),
+        asyncio.create_task(_payout_sync_loop()),
         asyncio.create_task(_commission_loop()),
         asyncio.create_task(_gram_loop()),
-        asyncio.create_task(_gram_rate_loop()),
         asyncio.create_task(_keepalive_loop()),
     ]
 
@@ -416,7 +418,7 @@ app.add_middleware(
 # ============================================================
 # ERREURS MÉTIER
 # ============================================================
-# Avant : TransactionServiceError / WalletServiceError / JessiKaPayError
+# Avant : TransactionServiceError / WalletServiceError / MoneyFusionError
 # n'étaient attrapées nulle part, donc chaque refus métier ("annonce
 # indisponible", "solde insuffisant"...) sortait en HTTP 500.
 
@@ -432,11 +434,11 @@ async def wallet_error_handler(request: Request, exc: WalletServiceError):
     return JSONResponse(status_code=400, content={"detail": str(exc)})
 
 
-@app.exception_handler(JessiKaPayError)
-async def jessikapay_error_handler(request: Request, exc: JessiKaPayError):
+@app.exception_handler(MoneyFusionError)
+async def moneyfusion_error_handler(request: Request, exc: MoneyFusionError):
     return JSONResponse(
         status_code=502,
-        content={"detail": f"Erreur JessiKaPay : {exc}"},
+        content={"detail": f"Erreur MoneyFusion : {exc}"},
     )
 
 

@@ -167,8 +167,6 @@ SCHEMA_PATCHES = [
     "ALTER TABLE deposits ADD COLUMN IF NOT EXISTS country VARCHAR(10)",
     # Paiement en GRAM (v20)
     "ALTER TABLE listings ADD COLUMN IF NOT EXISTS seller_gram_address VARCHAR(80)",
-    # Prix en FCFA des annonces payées en GRAM (cours du marché, v28)
-    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS price_xaf NUMERIC(18,2)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS buyer_gram_address VARCHAR(80)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS seller_gram_address VARCHAR(80)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS gram_tx_hash VARCHAR(120)",
@@ -176,6 +174,24 @@ SCHEMA_PATCHES = [
     "CREATE INDEX IF NOT EXISTS ix_transactions_gram_tx_hash ON transactions (gram_tx_hash)",
     # Aperçus visibles par les acheteurs (v21)
     "ALTER TABLE listing_proofs ADD COLUMN IF NOT EXISTS kind VARCHAR(12) NOT NULL DEFAULT 'proof'",
+    # Retraits MoneyFusion (v28) : pays / réseau / numéro / montant local
+    "ALTER TABLE withdrawals ALTER COLUMN jessikapay_jp_number DROP NOT NULL",
+    "ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_country VARCHAR(10)",
+    "ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_method VARCHAR(60)",
+    "ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_phone VARCHAR(40)",
+    "ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_currency VARCHAR(10)",
+    "ALTER TABLE withdrawals ADD COLUMN IF NOT EXISTS payout_amount NUMERIC(18,2)",
+    # Inscription en 3 étapes (v29)
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS country VARCHAR(2)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ",
+    # Achat direct + versement automatique au vendeur (v30)
+    "ALTER TABLE deposits ADD COLUMN IF NOT EXISTS purpose VARCHAR(20) NOT NULL DEFAULT 'deposit'",
+    "ALTER TABLE deposits ADD COLUMN IF NOT EXISTS listing_id INTEGER",
+    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS payout_country VARCHAR(10)",
+    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS payout_method VARCHAR(60)",
+    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS payout_phone VARCHAR(40)",
+    "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS seller_payout_started_at TIMESTAMPTZ",
 ]
 
 

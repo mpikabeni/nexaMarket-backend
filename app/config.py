@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     APP_VERSION: str = "1.0.11"
     ENVIRONMENT: str = "production"
 
-    FRONTEND_URL: str = "https://nexamarketf.netlify.app"
+    FRONTEND_URL: str = "https://nexamarke.netlify.app"
 
     DATABASE_URL: str
 
@@ -35,9 +35,6 @@ class Settings(BaseSettings):
     # temporairement cette obligation (tests).
     REQUIRE_BOT_AND_CHANNEL: bool = True
 
-    # Nombre minimum d'abonnés pour mettre un canal en vente.
-    MIN_CHANNEL_SUBSCRIBERS: int = 1000
-
     # ========================================================
     # ADMIN
     # ========================================================
@@ -62,15 +59,24 @@ class Settings(BaseSettings):
     SUPPORTED_CURRENCIES: str = "XAF,XOF,USD,EUR"
 
     # ========================================================
-    # FRAIS JESSIKAPAY SUR LES DÉPÔTS (doc JessiKaPay)
-    # - commission de 6 % prélevée sur ce que NexMarket reçoit ;
-    # - 3 % de frais Mobile Money ajoutés au montant payé par l'utilisateur.
-    # Le wallet est crédité du montant NET (après les 6 %), jamais plus que
-    # ce que NexMarket reçoit réellement.
+    # FRAIS MONEYFUSION SUR LES DÉPÔTS
+    # MoneyFusion prélève ses frais sur le paiement : le wallet est crédité
+    # du montant NET confirmé par MoneyFusion (champ « Montant » du statut),
+    # jamais plus que ce que NexMarket reçoit. Ce taux n'est qu'une
+    # ESTIMATION affichée avant le paiement (voir la table de frais du
+    # tableau de bord MoneyFusion, page « Fees »).
     # ========================================================
 
-    JESSIKAPAY_DEPOSIT_COMMISSION_RATE: float = 0.06
-    JESSIKAPAY_USER_FEE_RATE: float = 0.03
+    MONEYFUSION_DEPOSIT_FEE_RATE: float = 0.05
+
+    # JESSIKAPAY (prestataire actuel : paiement direct des achats + versement vendeur)
+    JESSIKAPAY_BASE_URL: str = "https://preferred-antonia-youtub-c1a62de8.koyeb.app"
+    JESSIKAPAY_API_KEY: str = ""
+    JESSIKAPAY_API_SECRET: str = ""
+    # Commission JessiKaPay prélevée sur ce que NexMarket reçoit (doc : 6 %).
+    JESSIKAPAY_COMMISSION_RATE: float = 0.06
+    # Numéro JP de NexMarket : reçoit les commissions (payout gratuit).
+    NEXA_JP_NUMBER: str = ""
 
     # ========================================================
     # PAIEMENT EN GRAM (TON) : adresse de NexMarket + lecture blockchain
@@ -99,26 +105,42 @@ class Settings(BaseSettings):
     GEMINI_MODEL: str = "gemini-2.5-flash"
 
     GRAM_RECEIVE_ADDRESS: str = ""
-
-    # Cours du GRAM : relu sur le marché toutes les 10 minutes (600 s).
-    # GRAM_XAF_RATE (optionnel) : impose un cours manuel (nombre de FCFA
-    # pour 1 GRAM) à la place du marché, p. ex. en cas de panne des API.
-    GRAM_RATE_REFRESH_SECONDS: int = 600
-    GRAM_XAF_RATE: float = 0
     TON_API_BASE: str = "https://toncenter.com/api/v3"
     TON_API_KEY: str = ""
 
     # ========================================================
-    # JESSIKAPAY
+    # MONEYFUSION (dépôts + retraits Mobile Money, tous pays/réseaux)
+    # Doc : https://docs.moneyfusion.net
     # ========================================================
 
-    JESSIKAPAY_API_URL: str = (
-        "https://preferred-antonia-youtub-c1a62de8.koyeb.app"
-    )
+    # Lien d'API des dépôts (tableau de bord > « API de paiement » > votre
+    # application). Il contient votre clé : gardez-le secret.
+    MONEYFUSION_API_URL: str = ""
 
-    JESSIKAPAY_API_KEY: str = ""
-    JESSIKAPAY_API_SECRET: str = ""
-    NEXA_JP_NUMBER: str = ""
+    # Clé privée des retraits (tableau de bord > Paramètres). Envoyée dans
+    # l'en-tête moneyfusion-private-key. L'IP sortante du serveur doit être
+    # enregistrée chez MoneyFusion (IP fixe obligatoire).
+    MONEYFUSION_PRIVATE_KEY: str = ""
+
+    MONEYFUSION_BASE_URL: str = "https://pay.moneyfusion.net"
+
+    # Segment secret de l'URL du webhook : /webhooks/moneyfusion/<secret>.
+    # Vide = webhook désactivé (la vérification périodique suffit). Les
+    # webhooks MoneyFusion ne sont pas signés : le serveur ne s'y fie jamais,
+    # il relit toujours le statut auprès de l'API avant d'agir.
+    MONEYFUSION_WEBHOOK_SECRET: str = ""
+
+    # Pays à devise NON CFA (CDF, GNF, GHS...) : valeur d'UNE unité de la
+    # devise locale en XAF, au format JSON, ex. {"GNF": 0.07, "CDF": 0.21}.
+    # Sans taux, ces pays sont masqués dans les retraits (aucune conversion
+    # inventée). XOF et XAF sont à parité 1:1 : aucun réglage nécessaire.
+    MONEYFUSION_FX_TO_XAF: str = ""
+
+    # Compte qui reçoit les commissions NexMarket (Mobile Money). Les trois
+    # champs sont nécessaires ; sinon aucune commission n'est versée.
+    NEXA_PAYOUT_COUNTRY: str = ""   # ex. cg
+    NEXA_PAYOUT_METHOD: str = ""    # ex. mtn-cg
+    NEXA_PAYOUT_PHONE: str = ""
 
     # Montant minimum d'un retrait (XAF).
     MIN_WITHDRAWAL_XAF: int = 1000
