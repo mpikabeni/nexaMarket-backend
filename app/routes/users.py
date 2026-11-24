@@ -181,11 +181,29 @@ async def complete_onboarding(
     current_user.country = country
     current_user.phone = phone
 
-    if current_user.onboarded_at is None:
+    first_time = current_user.onboarded_at is None
+
+    if first_time:
         current_user.onboarded_at = datetime.now(timezone.utc)
 
     await db.commit()
     await db.refresh(current_user)
+
+    if first_time:
+        # Le NEXA ID est remis dans le bot UNE FOIS le compte créé.
+        try:
+            from app.services.money_notifications import notify_user_id
+
+            await notify_user_id(
+                db,
+                current_user.id,
+                "🎉 <b>Compte créé !</b>\n\n"
+                "🆔 <b>Ton NEXA ID</b>\n"
+                f"<code>{current_user.nexa_id}</code>\n\n"
+                "Tu peux maintenant acheter et vendre des canaux sur NexMarket.",
+            )
+        except Exception:
+            pass
 
     return current_user
 
