@@ -1,10 +1,13 @@
+import re
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, HTTPException, Response, status
 
 from app.config import settings
 from app.services.telegram_service import get_telegram_service
 from app.services.wallet_service import WalletService
 from app.deps import CurrentUser, DBSession
-from app.models.schemas import UserResponse, UserUpdate
+from app.models.schemas import OnboardingIn, UserResponse, UserUpdate
 
 
 router = APIRouter(
@@ -141,6 +144,51 @@ async def update_my_profile(
 # ============================================================
 # GET MY WALLET SUMMARY
 # ============================================================
+
+# ============================================================
+# INSCRIPTION EN 3 ÉTAPES (profil, pays + numéro, sécurité)
+# ============================================================
+
+@router.post("/me/onboarding", response_model=UserResponse)
+async def complete_onboarding(
+    payload: OnboardingIn,
+    current_user: CurrentUser,
+    db: DBSession,
+):
+    """Enregistre le pays, le numéro Mobile Money et l'acceptation des conditions."""
+
+    country = payload.country.strip().upper()
+    phone = re.sub(r"\D", "", payload.phone)
+
+    if not re.fullmatch(r"[A-Z]{2}", country):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Pays invalide.")
+
+    if country in {"RU", "IN"}:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "NexMarket n'est pas disponible dans ton pays.",
+        )
+
+    if not 6 <= len(phone) <= 15:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Numéro invalide.")
+
+    if not payload.accept_terms:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Tu dois accepter les conditions pour créer ton compte.",
+        )
+
+    current_user.country = country
+    current_user.phone = phone
+
+    if current_user.onboarded_at is None:
+        current_user.onboarded_at = datetime.now(timezone.utc)
+
+    await db.commit()
+    await db.refresh(current_user)
+
+    return current_user
+
 
 @router.get("/me/wallet")
 async def get_my_wallet(

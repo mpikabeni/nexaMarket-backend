@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from uuid import uuid4
@@ -15,16 +14,15 @@ from app.deps import get_current_user
 from app.models.user import User
 from app.models.withdrawal import Withdrawal
 from app.services import money_notifications
-from app.services.jessikapay import (
-    JessiKaPayError,
-    jessikapay_service,
+from app.services.countries import local_phone
+from app.services.moneyfusion import (
+    MoneyFusionError,
+    find_method,
+    moneyfusion_service,
+    public_catalog,
+    to_local_amount,
 )
-from app.services.payout_settlement import (
-    FAILED_STATUSES,
-    PENDING_STATUSES,
-    complete_withdrawal,
-    fail_withdrawal,
-)
+from app.services.payout_settlement import fail_withdrawal
 from app.services.wallet_service import (
     WalletService,
     WalletServiceError,
@@ -38,8 +36,35 @@ router = APIRouter(
 
 
 # ============================================================
+# PAYS ET RÉSEAUX DISPONIBLES (source : MoneyFusion)
+# ============================================================
+
+@router.get("/methods")
+async def withdrawal_methods(user: User = Depends(get_current_user)):
+    """Pays + réseaux (MTN, Airtel, Orange, Wave...) où l'on peut retirer."""
+
+    countries, source = await moneyfusion_service.get_countries()
+
+    return {
+        "countries": public_catalog(countries),
+        "source": source,  # live | cache | fallback
+        "min_amount": settings.MIN_WITHDRAWAL_XAF,
+    }
+
+
+# ============================================================
 # CREATE WITHDRAWAL
 # ============================================================
+
+def _webhook_url() -> str:
+    base = (settings.PUBLIC_URL or "").strip().rstrip("/")
+    secret = (settings.MONEYFUSION_WEBHOOK_SECRET or "").strip()
+
+    if not base or not secret:
+        return ""
+
+    return f"{base}/webhooks/moneyfusion/{secret}"
+
 
 @router.post("")
 async def request_withdrawal(
@@ -47,29 +72,23 @@ async def request_withdrawal(
     db: AsyncSession = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
+    raise HTTPException(
+        status_code=410,
+        detail="Les retraits manuels ne sont plus proposés : le vendeur est payé automatiquement.",
+    )
+
     """
-    Crée un retrait vers un numéro JessiKaPay.
+    Crée un retrait Mobile Money (MoneyFusion) : pays + réseau + numéro.
 
-    Le montant est d'abord bloqué dans le wallet NexMarket,
-    puis envoyé à JessiKaPay.
-
-    Le retrait passe en processing jusqu'à la réception
-    de l'événement credit.completed.
+    Le montant est d'abord BLOQUÉ dans le wallet. MoneyFusion répond « accepté »
+    avec un jeton ; le retrait reste « processing » jusqu'à ce que la tâche de
+    fond (ou le webhook, vérifié par l'API) confirme le succès ou l'échec.
     """
 
     raw_amount = payload.get("amount", 0)
-
-    jp_number = str(
-        payload.get("jp_number", "")
-    ).strip()
-
-    jp_number = jp_number.upper()
-
-    if not re.fullmatch(r"JP-\d{6}", jp_number):
-        raise HTTPException(
-            status_code=400,
-            detail="Le numéro JessiKaPay doit être au format JP-222222.",
-        )
+    country = str(payload.get("country", "")).strip().lower()
+    method = str(payload.get("method", "")).strip()
+    raw_phone = str(payload.get("phone", "")).strip()
 
     try:
         amount = Decimal(str(raw_amount))
@@ -77,26 +96,15 @@ async def request_withdrawal(
         if not amount.is_finite():
             raise InvalidOperation
     except (InvalidOperation, ValueError):
-        raise HTTPException(
-            status_code=400,
-            detail="Montant invalide.",
-        )
+        raise HTTPException(status_code=400, detail="Montant invalide.")
 
-    amount = amount.quantize(
-        Decimal("0.01")
-    )
+    amount = amount.quantize(Decimal("0.01"))
 
     if amount <= 0:
-        raise HTTPException(
-            status_code=400,
-            detail="Le montant doit être supérieur à zéro.",
-        )
+        raise HTTPException(status_code=400, detail="Le montant doit être supérieur à zéro.")
 
     if amount != amount.to_integral_value():
-        raise HTTPException(
-            status_code=400,
-            detail="Le montant doit être un nombre entier (XAF).",
-        )
+        raise HTTPException(status_code=400, detail="Le montant doit être un nombre entier (XAF).")
 
     min_amount = Decimal(settings.MIN_WITHDRAWAL_XAF)
 
@@ -110,121 +118,112 @@ async def request_withdrawal(
         )
 
     # ========================================================
+    # PAYS + RÉSEAU : vérifiés côté serveur contre la liste MoneyFusion
+    # ========================================================
+
+    countries, _source = await moneyfusion_service.get_countries()
+    entry = find_method(countries, country, method)
+
+    if entry is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Ce pays ou ce réseau n'est pas disponible pour les retraits.",
+        )
+
+    local_amount = to_local_amount(amount, entry["currency"])
+
+    if not local_amount or local_amount < 1:
+        raise HTTPException(status_code=400, detail="Montant trop faible pour ce pays.")
+
+    phone = local_phone(country.upper(), raw_phone)
+
+    if not 6 <= len(phone) <= 15:
+        raise HTTPException(
+            status_code=400,
+            detail="Numéro invalide : entre ton numéro Mobile Money du réseau choisi.",
+        )
+
+    # ========================================================
     # WALLET
     # ========================================================
 
     wallet_service = WalletService(db)
 
     try:
-        wallet = await wallet_service.get_wallet(
-            user.id
-        )
+        wallet = await wallet_service.get_wallet(user.id)
     except WalletServiceError as exc:
-        raise HTTPException(
-            status_code=404,
-            detail=str(exc),
-        ) from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    available_balance = Decimal(
-        str(wallet.available_balance or 0)
-    )
+    available_balance = Decimal(str(wallet.available_balance or 0))
 
     if available_balance < amount:
-        raise HTTPException(
-            status_code=400,
-            detail="Solde insuffisant.",
-        )
+        raise HTTPException(status_code=400, detail="Solde insuffisant.")
 
     # ========================================================
-    # UNIQUE REFERENCE
+    # UNIQUE REFERENCE + BLOCAGE DES FONDS
     # ========================================================
 
-    reference = (
-        f"WD-{user.id}-"
-        f"{uuid4().hex[:16].upper()}"
-    )
-
-    # ========================================================
-    # BLOCK FUNDS
-    # ========================================================
+    reference = f"WD-{user.id}-{uuid4().hex[:16].upper()}"
 
     try:
         await wallet_service.block(
             user_id=user.id,
             amount=amount,
             reference=reference,
-            description=(
-                "Fonds bloqués pour retrait JessiKaPay"
-            ),
+            description="Fonds bloqués pour retrait Mobile Money",
         )
-
     except WalletServiceError as exc:
-        raise HTTPException(
-            status_code=400,
-            detail=str(exc),
-        ) from exc
-
-    # ========================================================
-    # CREATE WITHDRAWAL
-    # ========================================================
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     withdrawal = Withdrawal(
         user_id=user.id,
         reference=reference,
         amount=amount,
         currency="XAF",
-        jessikapay_jp_number=jp_number,
+        payout_country=country,
+        payout_method=method,
+        payout_phone=phone,
+        payout_currency=entry["currency"],
+        payout_amount=local_amount,
         status="pending",
     )
 
     db.add(withdrawal)
-
     await db.commit()
     await db.refresh(withdrawal)
 
     # ========================================================
-    # JESSIKAPAY PAYOUT
+    # MONEYFUSION PAYOUT
     # ========================================================
 
-    payout_payload = {
-        "jp_number": jp_number,
-        "amount": int(amount),  # l'API JessiKaPay attend un entier (FCFA)
-        "reference": reference,
-        "description": (
-            f"NexMarket withdrawal {reference}"
-        ),
-    }
-
     try:
-        payout_response = (
-            await jessikapay_service.payout(
-                payout_payload
-            )
+        payout_response = await moneyfusion_service.withdraw(
+            country=country,
+            method=method,
+            phone=phone,
+            amount=local_amount,
+            webhook_url=_webhook_url(),
         )
 
-    except JessiKaPayError as exc:
+    except MoneyFusionError as exc:
 
-        # Timeout / erreur réseau / 5xx : JessiKaPay a PEUT-ÊTRE
-        # déjà payé. Rendre l'argent ici permettrait un double
-        # paiement. On garde les fonds bloqués et un admin
-        # tranche (POST /admin/withdrawals/{id}/resolve).
+        # Timeout / réseau / 5xx / réponse sans jeton : MoneyFusion a PEUT-ÊTRE
+        # déjà payé. Rendre l'argent ici permettrait un double paiement. On
+        # garde les fonds bloqués et un admin tranche
+        # (POST /admin/withdrawals/{id}/resolve).
         if exc.ambiguous:
             withdrawal.status = "processing"
             withdrawal.processed_at = datetime.utcnow()
-            withdrawal.failure_reason = (
-                f"Statut inconnu, à vérifier : {exc}"
-            )
+            withdrawal.failure_reason = f"Statut inconnu, à vérifier : {exc}"
             await db.commit()
 
-            await money_notifications.withdrawal_processing(
-                db, withdrawal, needs_admin=True
-            )
+            await money_notifications.withdrawal_processing(db, withdrawal, needs_admin=True)
 
             return {
                 "success": True,
                 "id": withdrawal.id,
                 "reference": withdrawal.reference,
-                "provider": "jessikapay",
+                "provider": "moneyfusion",
                 "status": withdrawal.status,
                 "message": (
                     "Votre retrait est en cours de vérification. "
@@ -232,104 +231,23 @@ async def request_withdrawal(
                 ),
             }
 
-        # Refus explicite (4xx) : on libère les fonds.
+        # Refus explicite : MoneyFusion n'a rien envoyé, on libère les fonds.
+        await fail_withdrawal(db, withdrawal, str(exc))
+        await money_notifications.withdrawal_failed(db, withdrawal, str(exc))
 
-        try:
-            await wallet_service.release_blocked(
-                user_id=user.id,
-                amount=amount,
-                reference=f"{reference}-RELEASE",
-                description=(
-                    "Libération des fonds après "
-                    "échec du payout JessiKaPay"
-                ),
-            )
-
-        except WalletServiceError as release_exc:
-            withdrawal.failure_reason = (
-                f"JessiKaPay: {exc}; "
-                f"Release: {release_exc}"
-            )
-
-        else:
-            withdrawal.failure_reason = str(exc)
-
-        withdrawal.status = "failed"
-
-        await db.commit()
-
-        await money_notifications.withdrawal_failed(
-            db, withdrawal, str(exc)
-        )
-
-        raise HTTPException(
-            status_code=502,
-            detail=f"Erreur JessiKaPay : {exc}",
-        ) from exc
+        raise HTTPException(status_code=502, detail=f"Retrait refusé : {exc}") from exc
 
     # ========================================================
-    # SAVE JESSIKAPAY TRANSACTION
+    # ACCEPTÉ : jeton de suivi enregistré, le retrait reste « processing »
     # ========================================================
 
-    transaction_id = payout_response.get(
-        "transaction_id"
-    )
-
-    if transaction_id:
-        withdrawal.jessikapay_transaction_id = str(
-            transaction_id
-        )
-
+    withdrawal.jessikapay_transaction_id = payout_response["token"]
+    withdrawal.status = "processing"
     withdrawal.processed_at = datetime.utcnow()
+    withdrawal.failure_reason = None
+    await db.commit()
 
-    # Plus de webhook : la réponse du payout fait foi.
-    #  - refus explicite  -> fonds rendus ;
-    #  - en attente       -> reste "processing" (décision admin) ;
-    #  - sinon (accepté)  -> fonds consommés, retrait terminé.
-    # Réponse de succès documentée : {"success": true, "transaction_id": ...}.
-    # Sans cette confirmation explicite, on ne termine PAS le retrait (les
-    # fonds restent bloqués et un admin tranche) : mieux vaut un retrait « à
-    # vérifier » qu'un retrait marqué payé alors que rien n'est parti.
-    confirmed = (
-        payout_response.get("success") is True
-        or bool(payout_response.get("transaction_id"))
-    )
-    provider_status = str(payout_response.get("status") or "").lower()
-
-    if payout_response.get("success") is False and not provider_status:
-        provider_status = "failed"
-
-    if provider_status in FAILED_STATUSES:
-        reason = (
-            payout_response.get("message")
-            or payout_response.get("reason")
-            or f"Payout {provider_status}."
-        )
-        await fail_withdrawal(db, withdrawal, str(reason))
-
-        await money_notifications.withdrawal_failed(
-            db, withdrawal, str(reason)
-        )
-
-        raise HTTPException(
-            status_code=502,
-            detail=f"Retrait refusé par JessiKaPay : {reason}",
-        )
-
-    if provider_status in PENDING_STATUSES or not confirmed:
-        withdrawal.status = "processing"
-        if not confirmed:
-            withdrawal.failure_reason = (
-                "Réponse JessiKaPay sans confirmation de succès : à vérifier "
-                f"dans JessiKaPay (référence {withdrawal.reference})."
-            )
-        await db.commit()
-        await money_notifications.withdrawal_processing(
-            db, withdrawal, needs_admin=not confirmed
-        )
-    else:
-        await complete_withdrawal(db, withdrawal)
-        await money_notifications.withdrawal_completed(db, withdrawal)
+    await money_notifications.withdrawal_processing(db, withdrawal, needs_admin=False)
 
     await db.refresh(withdrawal)
 
@@ -337,69 +255,16 @@ async def request_withdrawal(
         "success": True,
         "id": withdrawal.id,
         "reference": withdrawal.reference,
-        "provider": "jessikapay",
-        "jessikapay_transaction_id": (
-            withdrawal.jessikapay_transaction_id
-        ),
-        "jp_number": withdrawal.jessikapay_jp_number,
+        "provider": "moneyfusion",
         "amount": float(withdrawal.amount),
         "currency": withdrawal.currency,
+        "payout_amount": float(withdrawal.payout_amount),
+        "payout_currency": withdrawal.payout_currency,
         "status": withdrawal.status,
         "message": (
-            "Votre retrait a été effectué. Une confirmation "
-            "vous est envoyée dans le bot."
-            if withdrawal.status == "completed"
-            else "Votre retrait est en cours de traitement. "
+            "Votre retrait est en cours de traitement. "
             "Le bot vous prévient dès la confirmation."
         ),
-    }
-
-
-# ============================================================
-# LOOKUP COMPTE JESSIKAPAY
-# ============================================================
-# (Avant : ce code était collé APRES le `return` de
-# request_withdrawal, donc jamais enregistré : l'URL renvoyait 404.)
-
-@router.get("/lookup/{jp_number}")
-async def lookup_jp(
-    jp_number: str,
-    user: User = Depends(get_current_user),
-):
-    """Vérifie directement un compte JessiKaPay sans choisir de pays."""
-
-    jp_number = jp_number.strip().upper()
-
-    if not re.fullmatch(r"JP-\d{6}", jp_number):
-        raise HTTPException(
-            status_code=400,
-            detail="Le numéro JessiKaPay doit être au format JP-222222.",
-        )
-
-    try:
-        result = await jessikapay_service.lookup_jp(jp_number)
-    except JessiKaPayError as exc:
-        raise HTTPException(
-            status_code=502,
-            detail=f"Erreur JessiKaPay : {exc}",
-        ) from exc
-
-    if not isinstance(result, dict):
-        raise HTTPException(
-            status_code=502,
-            detail="Réponse JessiKaPay invalide.",
-        )
-
-    if not result.get("found"):
-        return {"found": False}
-
-    return {
-        "found": True,
-        "jp_number": result.get("jp_number") or jp_number,
-        "name": result.get("name") or "",
-        "first_name": result.get("first_name") or "",
-        "last_name": result.get("last_name") or "",
-        "photo_url": result.get("photo_url") or "",
     }
 
 
@@ -437,12 +302,15 @@ async def mine(
             ),
             "currency": withdrawal.currency,
             "status": withdrawal.status,
-            "jp_number": (
-                withdrawal.jessikapay_jp_number
+            "country": withdrawal.payout_country,
+            "method": withdrawal.payout_method,
+            "phone": withdrawal.payout_phone,
+            "payout_amount": (
+                float(withdrawal.payout_amount)
+                if withdrawal.payout_amount is not None
+                else None
             ),
-            "jessikapay_transaction_id": (
-                withdrawal.jessikapay_transaction_id
-            ),
+            "payout_currency": withdrawal.payout_currency,
             "failure_reason": (
                 withdrawal.failure_reason
             ),

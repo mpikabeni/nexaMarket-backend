@@ -20,14 +20,6 @@ from app.services.telegram_service import (
 )
 
 
-def _subscribers_error(count: int) -> str:
-    minimum = settings.MIN_CHANNEL_SUBSCRIBERS
-    return (
-        f"Ton canal doit avoir au moins {minimum:,} abonnés pour être "
-        f"mis en vente (actuellement : {int(count or 0):,})."
-    ).replace(",", " ")
-
-
 router = APIRouter(
     prefix="/channels",
     tags=["Channels"],
@@ -231,13 +223,6 @@ async def submit_channel(
                 "Seul le propriétaire (créateur) du canal peut le mettre "
                 "en vente. Utilisez le compte Telegram qui a créé le canal."
             ),
-        )
-
-    # Minimum d'abonnés exigé pour mettre un canal en vente.
-    if verification.subscriber_count < settings.MIN_CHANNEL_SUBSCRIBERS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_subscribers_error(verification.subscriber_count),
         )
 
     # --------------------------------------------------------
@@ -592,12 +577,6 @@ async def verify_channel(
                 verification.error
                 or "Impossible de vérifier ce canal Telegram."
             ),
-        )
-
-    if verification.subscriber_count < settings.MIN_CHANNEL_SUBSCRIBERS:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=_subscribers_error(verification.subscriber_count),
         )
 
     channel.telegram_username = (

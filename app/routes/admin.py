@@ -39,7 +39,9 @@ from app.services.telegram_service import get_telegram_service
 from app.models.withdrawal import Withdrawal
 from app.models.deposit import Deposit
 from app.services.deposit_sync import credit_deposit_manually, sync_deposit
-from app.services.jessikapay import JessiKaPayError, jessikapay_service
+from app.services.jessikapay import jessikapay_service
+from app.services.moneyfusion import MoneyFusionError
+from app.services.payout_sync import sync_withdrawal
 from app.models.platform import CommissionPayout
 from app.services.payout_settlement import complete_withdrawal, fail_withdrawal
 from app.models.report import Report
@@ -805,7 +807,22 @@ async def approve_listing(
             detail="Annonce introuvable.",
         )
 
-    # Photos de preuve facultatives : on peut approuver sans.
+    # Les photos de preuve (envoyées par le vendeur) doivent exister.
+    proofs_count = await db.scalar(
+        select(func.count())
+        .select_from(ListingProof)
+        .where(ListingProof.listing_id == listing_id)
+    )
+
+    if not proofs_count and not without_proofs:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                "Aucune photo de preuve n'a été fournie pour cette annonce. "
+                "Demandez-les au vendeur, ou approuvez quand même en "
+                "confirmant."
+            ),
+        )
 
     channel_result = await db.execute(
         select(Channel).where(
@@ -1154,7 +1171,7 @@ async def admin_wallets(
     """
     Vue des soldes des wallets utilisateurs.
 
-    Aucun numéro JessiKaPay privé n'est retourné.
+    Aucun numéro MoneyFusion privé n'est retourné.
     """
 
     result = await db.execute(
@@ -1400,7 +1417,17 @@ async def list_withdrawals(
                 "user_id": w.user_id,
                 "amount": w.amount,
                 "currency": w.currency,
-                "jp_number": w.jessikapay_jp_number,
+                "destination": (
+                    f"{(w.payout_country or '').upper()} · {w.payout_method or ''} · {w.payout_phone or ''}"
+                    if w.payout_method
+                    else (w.jessikapay_jp_number or "")
+                ),
+                "country": w.payout_country,
+                "method": w.payout_method,
+                "phone": w.payout_phone,
+                "payout_amount": w.payout_amount,
+                "payout_currency": w.payout_currency,
+                "tracked": bool(w.jessikapay_transaction_id),
                 "status": w.status,
                 "failure_reason": w.failure_reason,
                 "created_at": w.created_at,
@@ -1408,6 +1435,22 @@ async def list_withdrawals(
             for w in rows
         ]
     }
+
+
+@router.post("/withdrawals/{withdrawal_id}/recheck")
+async def recheck_withdrawal(
+    withdrawal_id: int,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """Relit tout de suite le statut chez MoneyFusion (retrait « processing » avec jeton)."""
+
+    new_status = await sync_withdrawal(db, withdrawal_id)
+
+    if new_status == "unknown":
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Retrait introuvable.")
+
+    return {"id": withdrawal_id, "status": new_status}
 
 
 @router.post("/withdrawals/{withdrawal_id}/resolve")
@@ -1419,7 +1462,7 @@ async def resolve_withdrawal(
 ):
     """
     Tranche un retrait dont l'issue est inconnue, APRÈS avoir vérifié
-    dans JessiKaPay si le versement a bien été fait :
+    dans MoneyFusion si le versement a bien été fait :
       - complete : le versement a eu lieu -> les fonds bloqués sont consommés ;
       - fail     : il n'a pas eu lieu     -> les fonds sont rendus à l'utilisateur.
     """
@@ -1513,7 +1556,7 @@ async def recheck_deposit(
     db: DBSession,
 ):
     """
-    Interroge JessiKaPay à nouveau (même pour un dépôt classé en échec)
+    Interroge MoneyFusion à nouveau (même pour un dépôt classé en échec)
     et renvoie la RÉPONSE BRUTE du prestataire pour comprendre le blocage.
     """
 
@@ -1525,8 +1568,8 @@ async def recheck_deposit(
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Dépôt introuvable.")
 
     try:
-        provider = await jessikapay_service.get_deposit(deposit.jessikapay_request_id)
-    except JessiKaPayError as exc:
+        provider = await jessikapay_service.get_payment_status(deposit.jessikapay_request_id)
+    except MoneyFusionError as exc:
         provider = {"error": str(exc)}
 
     new_status = await sync_deposit(db, deposit_id, force=True)
@@ -1547,7 +1590,7 @@ async def credit_deposit(
 ):
     """
     Crédite le wallet de l'utilisateur APRÈS avoir vérifié dans
-    JessiKaPay que le paiement a bien été reçu. Sans double crédit.
+    MoneyFusion que le paiement a bien été reçu. Sans double crédit.
     """
 
     result = await credit_deposit_manually(
@@ -1561,11 +1604,94 @@ async def credit_deposit(
 
 
 # ============================================================
-# COMMISSIONS vers le compte JessiKaPay NexMarket
+# AJUSTEMENT MANUEL DU PORTEFEUILLE (crédit / retrait par un admin)
+# ============================================================
+
+class WalletAdjustRequest(BaseModel):
+    action: str  # "credit" ou "debit"
+    amount: int
+    note: str = ""
+
+
+@router.post("/wallets/{user_id}/adjust")
+async def adjust_wallet(
+    user_id: int,
+    payload: WalletAdjustRequest,
+    current_admin: CurrentAdmin,
+    db: DBSession,
+):
+    """Crédite ou débite le portefeuille NexMarket d'un utilisateur.
+
+    Chaque ajustement est tracé (référence ADM-…, note, admin) dans
+    l'historique du wallet. Un retrait ne peut pas dépasser le solde disponible.
+    """
+
+    import logging
+    from decimal import Decimal
+    from uuid import uuid4
+
+    from app.services.wallet_service import WalletService, WalletServiceError
+
+    action = (payload.action or "").strip().lower()
+    note = (payload.note or "").strip()[:200]
+
+    if action not in {"credit", "debit"}:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Action invalide (credit ou debit).")
+
+    if payload.amount <= 0 or payload.amount > 100_000_000:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Montant invalide.")
+
+    if not note:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Ajoute une note : elle est conservée dans l'historique.")
+
+    target = (await db.execute(select(User).where(User.id == user_id))).scalar_one_or_none()
+
+    if target is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Utilisateur introuvable.")
+
+    service = WalletService(db)
+    reference = "ADM-" + uuid4().hex[:20].upper()
+    description = f"Admin #{current_admin.id} : {note}"
+    amount = Decimal(payload.amount)
+
+    try:
+        if action == "credit":
+            wallet = await service.credit(
+                user_id=user_id, amount=amount, reference=reference,
+                operation_type="admin_credit", description=description,
+            )
+        else:
+            wallet = await service.debit(
+                user_id=user_id, amount=amount, reference=reference,
+                operation_type="admin_debit", description=description,
+            )
+    except WalletServiceError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from exc
+
+    logging.getLogger("nexmarket.admin").warning(
+        "Wallet %s %s %s XAF par admin %s (%s)", user_id, action, payload.amount, current_admin.id, note,
+    )
+
+    verb = "crédité de" if action == "credit" else "débité de"
+    await notify_user_id(
+        db, user_id,
+        f"ℹ️ Ton portefeuille NexMarket a été {verb} {payload.amount} XAF par l'administration.\n\nMotif : {note}",
+    )
+
+    return {
+        "reference": reference,
+        "action": action,
+        "amount": payload.amount,
+        "available_balance": float(wallet.available_balance),
+    }
+
+
+# ============================================================
+# COMMISSIONS vers le compte MoneyFusion NexMarket
 # ============================================================
 
 class CommissionResolveRequest(BaseModel):
-    action: str  # "sent" (déjà reçue dans JessiKaPay) ou "retry" (non reçue)
+    action: str  # "sent" (déjà reçue dans MoneyFusion) ou "retry" (non reçue)
     note: str = ""
 
 
@@ -1615,7 +1741,7 @@ async def resolve_commission(
 ):
     """
     Tranche une commission « processing / failed / manual » APRÈS avoir
-    vérifié dans JessiKaPay :
+    vérifié dans MoneyFusion :
       - sent  : la commission est bien arrivée -> marquée versée ;
       - retry : elle n'est PAS arrivée -> remise en file d'envoi.
     """
@@ -1818,10 +1944,17 @@ async def remove_channel(
     channel_id: int,
     current_admin: CurrentAdmin,
     db: DBSession,
+    ban: bool = False,
 ):
     """
-    Retire définitivement un canal de NexMarket : ses annonces sont
-    annulées, il n'est plus visible et ne peut plus être remis en vente.
+    Retire un canal de la vente : ses annonces sont annulées et il n'est
+    plus visible.
+
+    - ban=false (défaut) : retrait RÉVERSIBLE (statut « withdrawn »). Le
+      vendeur peut soumettre à nouveau son canal quand il veut.
+    - ban=true : bannissement DÉFINITIF (statut « removed »), pour les
+      canaux frauduleux. Il ne peut plus jamais être remis en vente.
+
     L'historique des transactions terminées est conservé.
     """
 
@@ -1875,7 +2008,7 @@ async def remove_channel(
 
     channel.is_active = False
     channel.is_listed = False
-    channel.verification_status = "removed"
+    channel.verification_status = "removed" if ban else "withdrawn"
 
     title = channel.title
     owner_id = channel.owner_id
@@ -1885,14 +2018,21 @@ async def remove_channel(
     await notify_user_id(
         db,
         owner_id,
-        f"⛔ Votre canal « {title} » a été retiré de NexMarket par "
-        "l'administration.",
+        (
+            f"⛔ Votre canal « {title} » a été banni de NexMarket par "
+            "l'administration. Il ne peut plus être remis en vente."
+            if ban
+            else f"ℹ️ Votre canal « {title} » a été retiré de la vente par "
+            "l'administration. Vous pouvez le soumettre à nouveau "
+            "quand vous voulez."
+        ),
     )
 
     return {
         "status": "success",
         "channel_id": channel_id,
         "listings_cancelled": cancelled,
+        "banned": ban,
     }
 
 
