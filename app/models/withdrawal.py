@@ -11,8 +11,17 @@ class Withdrawal(Base):
     reference: Mapped[str] = mapped_column(String(100), unique=True, index=True)
     amount: Mapped[Decimal] = mapped_column(Numeric(18,2), nullable=False)
     currency: Mapped[str] = mapped_column(String(10), default="XAF", nullable=False)
-    jessikapay_jp_number: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Destination Mobile Money (MoneyFusion) : pays, réseau, numéro et montant dans
+    # la devise locale du pays. Anciennes colonnes conservées (noms historiques) :
+    #   jessikapay_jp_number      : ancien numéro JP (plus utilisé, nullable) ;
+    #   jessikapay_transaction_id : jeton de suivi du retrait (tokenPay MoneyFusion).
+    jessikapay_jp_number: Mapped[str | None] = mapped_column(String(255), nullable=True)
     jessikapay_transaction_id: Mapped[str | None] = mapped_column(String(255), unique=True)
+    payout_country: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    payout_method: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    payout_phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    payout_currency: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    payout_amount: Mapped[Decimal | None] = mapped_column(Numeric(18, 2), nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     reviewed_by_admin_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
     admin_note: Mapped[str | None] = mapped_column(Text)

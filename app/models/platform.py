@@ -208,14 +208,14 @@ class PlatformLedger(Base):
 class CommissionPayout(Base):
     """
     Versement de la commission d'UNE transaction vers le compte
-    JessiKaPay de NexMarket (NEXA_JP_NUMBER).
+    Mobile Money de NexMarket (NEXA_PAYOUT_*).
 
     Une ligne par transaction (transaction_id unique) : impossible de
     verser deux fois la même commission.
 
     Statuts :
       pending    : à verser (la tâche de fond s'en occupe)
-      sending    : appel JessiKaPay en cours (ne JAMAIS renvoyer seul)
+      sending    : appel MoneyFusion en cours (ne JAMAIS renvoyer seul)
       sent       : versée
       processing : issue inconnue (timeout) -> un admin vérifie
       failed     : refusée plusieurs fois -> un admin décide

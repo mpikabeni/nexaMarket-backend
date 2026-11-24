@@ -1,6 +1,6 @@
 from datetime import datetime
 from decimal import Decimal
-from sqlalchemy import DateTime, ForeignKey, Numeric, String, Text, Boolean
+from sqlalchemy import Integer, DateTime, ForeignKey, Numeric, String, Text, Boolean
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.db import Base
 
@@ -18,6 +18,10 @@ class Deposit(Base):
     payment_link: Mapped[str | None] = mapped_column(Text)
     commission_amount: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
     net_amount_credited: Mapped[Decimal | None] = mapped_column(Numeric(18,2))
+    # purpose = "purchase" : paiement direct d'un canal (aucun dépôt manuel) ; l'achat
+    # est créé automatiquement une fois le paiement confirmé.
+    purpose: Mapped[str] = mapped_column(String(20), default="deposit", nullable=False)
+    listing_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(30), default="pending", index=True)
     webhook_received: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     webhook_event_id: Mapped[str | None] = mapped_column(String(255), unique=True)

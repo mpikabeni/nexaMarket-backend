@@ -101,6 +101,13 @@ class User(Base):
         default="XAF",
     )
 
+    # Inscription en 3 étapes (profil, pays + numéro, sécurité/conditions).
+    country: Mapped[str | None] = mapped_column(String(2), nullable=True)
+    phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    onboarded_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     # ========================================================
     # TIMESTAMPS
     # ========================================================

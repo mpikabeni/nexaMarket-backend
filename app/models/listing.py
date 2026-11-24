@@ -69,19 +69,17 @@ class Listing(Base):
         default="XAF",
     )
 
-    # Prix de référence en FCFA des annonces payées en GRAM : le prix en GRAM
-    # (colonne « price ») est recalculé toutes les 10 min au cours du marché.
-    # NULL = ancienne annonce au prix GRAM fixe.
-    price_xaf: Mapped[Decimal | None] = mapped_column(
-        Numeric(18, 2),
-        nullable=True,
-    )
-
     # Adresse GRAM (TON) du vendeur : renseignée si currency == "GRAM".
     seller_gram_address: Mapped[str | None] = mapped_column(
         String(80),
         nullable=True,
     )
+
+    # Où le vendeur reçoit son argent (Mobile Money via MoneyFusion) une fois
+    # les fonds libérés par l'admin : versement automatique.
+    payout_country: Mapped[str | None] = mapped_column(String(10), nullable=True)
+    payout_method: Mapped[str | None] = mapped_column(String(60), nullable=True)
+    payout_phone: Mapped[str | None] = mapped_column(String(40), nullable=True)
 
     # ========================================================
     # LISTING INFORMATION

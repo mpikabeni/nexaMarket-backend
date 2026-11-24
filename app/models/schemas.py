@@ -36,6 +36,15 @@ class UserResponse(APIModel):
     language: str
     preferred_currency: str
     created_at: datetime
+    country: str | None = None
+    phone: str | None = None
+    onboarded_at: datetime | None = None
+
+
+class OnboardingIn(BaseModel):
+    country: str = Field(..., min_length=2, max_length=2)
+    phone: str = Field(..., min_length=6, max_length=24)
+    accept_terms: bool
 
 
 class UserUpdate(BaseModel):
@@ -142,6 +151,11 @@ class ChannelModeration(BaseModel):
 class ListingCreate(BaseModel):
     channel_id: int
 
+    # Compte Mobile Money du vendeur (versement automatique après libération).
+    payout_country: str | None = Field(default=None, max_length=10)
+    payout_method: str | None = Field(default=None, max_length=60)
+    payout_phone: str | None = Field(default=None, max_length=24)
+
     price: Decimal = Field(
         ...,
         gt=0,
@@ -176,10 +190,6 @@ class ListingCreate(BaseModel):
         max_length=4,
     )
 
-    # Annonce payée en GRAM : prix du canal en FCFA. Le prix en GRAM est
-    # calculé par le serveur au cours du marché (mis à jour toutes les 10 min).
-    price_xaf: Decimal | None = Field(default=None, gt=0, decimal_places=2)
-
     # Annonce payée en GRAM (currency == "GRAM") : adresse du vendeur.
     gram_address: str | None = Field(default=None, max_length=80)
 
@@ -193,9 +203,6 @@ class ListingUpdate(BaseModel):
         gt=0,
         decimal_places=2,
     )
-
-    # Annonce GRAM à prix en FCFA : nouveau prix en FCFA.
-    price_xaf: Decimal | None = Field(default=None, gt=0, decimal_places=2)
 
     currency: str | None = Field(
         default=None,
@@ -536,7 +543,7 @@ class DepositResponse(APIModel):
 
     status: str
 
-    jessikapay_request_id: str
+    jessikapay_request_id: str  # jeton MoneyFusion (nom de colonne historique)
     jessikapay_code: str | None = None
     payment_link: str | None = None
 
@@ -571,11 +578,9 @@ class WithdrawalRequest(BaseModel):
         max_length=10,
     )
 
-    jp_number: str = Field(
-        ...,
-        min_length=3,
-        max_length=100,
-    )
+    country: str = Field(..., min_length=2, max_length=10)
+    method: str = Field(..., min_length=2, max_length=60)
+    phone: str = Field(..., min_length=6, max_length=40)
 
 
 class WithdrawalResponse(APIModel):
@@ -587,7 +592,10 @@ class WithdrawalResponse(APIModel):
 
     status: str
 
-    jessikapay_transaction_id: str | None = None
+    jessikapay_transaction_id: str | None = None  # jeton de suivi MoneyFusion
+    payout_country: str | None = None
+    payout_method: str | None = None
+    payout_phone: str | None = None
 
     failure_reason: str | None = None
     admin_note: str | None = None
