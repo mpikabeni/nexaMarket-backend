@@ -3,7 +3,9 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from datetime import datetime, timedelta, timezone
+
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db import get_db
@@ -50,6 +52,22 @@ def _webhook_url() -> str:
     secret = (settings.MONEYFUSION_WEBHOOK_SECRET or "").strip()
 
     return f"{base}/webhooks/moneyfusion/{secret}" if base and secret else ""
+
+
+@router.get("/pay-countries")
+async def pay_countries(user: User = Depends(get_current_user)):
+    """Pays où le paiement d'un canal est disponible (les autres : « Bientôt disponible »)."""
+
+    from app.services.countries import country_dial, country_name
+
+    codes = settings.jessikapay_countries_list
+
+    return {
+        "countries": [
+            {"code": c, "name": country_name(c) or c, "dial": f"+{country_dial(c) or ''}"}
+            for c in codes
+        ]
+    }
 
 
 @router.post("")
@@ -171,11 +189,30 @@ async def pay_for_listing(
     if not country:
         raise HTTPException(400, "Choisis ton pays pour le paiement.")
 
+    if country not in settings.jessikapay_countries_list:
+        raise HTTPException(400, "Bientôt disponible dans ton pays.")
+
     if not 6 <= len(phone) <= 15:
         raise HTTPException(400, "Numéro invalide : entre ton numéro Mobile Money.")
 
     # JessiKaPay prélève 6 % sur ce que NexMarket reçoit : on majore pour que
     # le NET couvre le prix. L'acheteur voit ses frais sur la page de paiement.
+    # Anti-abus : pas plus de 5 paiements en attente par heure et par acheteur.
+    since = datetime.utcnow() - timedelta(hours=1)  # created_at est naïf (UTC)
+    recent = (
+        await db.execute(
+            select(func.count(Deposit.id)).where(
+                Deposit.user_id == user.id,
+                Deposit.purpose == "purchase",
+                Deposit.status.in_(("pending", "reviewing", "awaiting_payment")),
+                Deposit.created_at >= since,
+            )
+        )
+    ).scalar_one()
+
+    if recent >= 5:
+        raise HTTPException(429, "Trop de paiements en attente. Termine ou attends l'expiration des précédents.")
+
     price = Decimal(str(listing.price))
     rate = Decimal(str(settings.JESSIKAPAY_COMMISSION_RATE))
     amount = (price / (Decimal(1) - rate)).to_integral_value(rounding=ROUND_CEILING)

@@ -110,7 +110,7 @@ async def get_rates():
             "usd": gram_usd,
             "xaf": float(gram_xaf) if gram_xaf else None,
             "updated_at": gram_fetched or None,
-            "next_refresh_at": (gram_fetched + gram_price.REFRESH_SECONDS) if gram_fetched else None,
+            "next_refresh_at": gram_price.next_refresh_at() if gram_fetched else None,
             "interval_seconds": gram_price.REFRESH_SECONDS,
             "source": gram_source,
             # Devises utilisables pour fixer un prix d'annonce GRAM (unités pour 1 USD).
