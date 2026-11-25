@@ -75,19 +75,22 @@ def money(value, currency="XAF") -> str:
     return f"{text} {currency}"
 
 
+JESSIKAPAY_BOT_URL = "https://t.me/JessiKaPayBot"
+
+
 def main_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
                 InlineKeyboardButton(
-                    "🛠 Ouvrir l'administration (valider les annonces)",
-                    web_app=WebAppInfo(url=f"{FRONTEND_URL.rstrip('/')}/admin/"),
-                ),
+                    "🛒 Ouvrir NexMarket",
+                    web_app=WebAppInfo(url=FRONTEND_URL),
+                )
             ],
             [
                 InlineKeyboardButton(
-                    "🛒 Ouvrir NexMarket",
-                    web_app=WebAppInfo(url=FRONTEND_URL),
+                    "💎 Récupérer mon numéro JP (@JessiKaPayBot)",
+                    url=JESSIKAPAY_BOT_URL,
                 )
             ],
         ]
@@ -101,7 +104,10 @@ WITHDRAW_HELP_TEXT = (
     "Quand tu vends un canal, ton argent est envoyé sur ton "
     "<b>compte JessiKaPay</b> (ton numéro <b>JP</b>), une fois le paiement "
     "de l'acheteur confirmé et la livraison validée par l'équipe NexMarket.\n\n"
-    "1️⃣ Mets ton canal en vente dans NexMarket et entre ton <b>numéro JP</b>.\n"
+    "0️⃣ Ouvre le bot <b>@JessiKaPayBot</b>, crée ton compte et récupère ton "
+    "<b>numéro JP</b>.\n"
+    "1️⃣ Mets ton canal en vente dans NexMarket et colle ton <b>numéro JP</b> "
+    "dans la page de vente.\n"
     "2️⃣ L'acheteur paie : son argent reste <b>bloqué</b> jusqu'à la livraison.\n"
     "3️⃣ Après la libération, l'argent arrive sur ton <b>compte JessiKaPay</b>.\n"
     "4️⃣ Depuis JessiKaPay, tu le retires ensuite vers ton Mobile Money.\n\n"
@@ -127,6 +133,12 @@ def admin_keyboard() -> InlineKeyboardMarkup:
                     "📢 Diffusion",
                     callback_data="admin_broadcast",
                 ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "🛠 Ouvrir l'administration (valider les annonces)",
+                    web_app=WebAppInfo(url=f"{FRONTEND_URL.rstrip('/')}/admin/"),
+                )
             ],
             [
                 InlineKeyboardButton(
@@ -508,7 +520,8 @@ async def start_command(
             )
             +
             "💸 <b>Tes gains</b> arrivent sur ton compte JessiKaPay "
-            "après le paiement : voir /retrait.\n\n"
+            "après le paiement. Récupère ton numéro JP dans "
+            "<b>@JessiKaPayBot</b> : voir /retrait.\n\n"
             "Propulsé par <b>NEXA</b>."
         )
 

@@ -184,6 +184,7 @@ SCHEMA_PATCHES = [
     # Inscription en 3 étapes (v29)
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS country VARCHAR(2)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS jp_number VARCHAR(40)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarded_at TIMESTAMPTZ",
     # Achat direct + versement automatique au vendeur (v30)
     "ALTER TABLE deposits ADD COLUMN IF NOT EXISTS purpose VARCHAR(20) NOT NULL DEFAULT 'deposit'",
