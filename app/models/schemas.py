@@ -38,12 +38,15 @@ class UserResponse(APIModel):
     created_at: datetime
     country: str | None = None
     phone: str | None = None
+    jp_number: str | None = None
     onboarded_at: datetime | None = None
 
 
 class OnboardingIn(BaseModel):
     country: str = Field(..., min_length=2, max_length=2)
     phone: str = Field(..., min_length=6, max_length=24)
+    # Numéro JessiKaPay (récupéré dans @JessiKaPayBot) : demandé une seule fois.
+    jp_number: str = Field(..., min_length=4, max_length=40)
     accept_terms: bool
 
 

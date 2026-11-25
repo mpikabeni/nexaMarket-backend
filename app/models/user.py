@@ -104,6 +104,8 @@ class User(Base):
     # Inscription en 3 étapes (profil, pays + numéro, sécurité/conditions).
     country: Mapped[str | None] = mapped_column(String(2), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(20), nullable=True)
+    # Numéro JessiKaPay : demandé UNE fois à l'inscription, réutilisé pour les ventes.
+    jp_number: Mapped[str | None] = mapped_column(String(40), nullable=True)
     onboarded_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
