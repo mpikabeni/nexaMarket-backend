@@ -77,6 +77,13 @@ class Settings(BaseSettings):
     JESSIKAPAY_COMMISSION_RATE: float = 0.06
     # Numéro JP de NexMarket : reçoit les commissions (payout gratuit).
     NEXA_JP_NUMBER: str = ""
+    # Pays où JessiKaPay encaisse (codes ISO, séparés par des virgules). Les autres
+    # affichent « Bientôt disponible ». À mettre à jour quand JessiKaPay ouvre un pays.
+    JESSIKAPAY_COUNTRIES: str = "CI,SN,TG,BJ,BF,ML,CM,GA,NE,CG,CD,GN,TD,GH,KE,CF,GW"
+
+    # Sécurité
+    TRUSTED_PROXY_HOPS: int = 1  # nombre de proxys de confiance devant l'API
+    MAX_BODY_BYTES: int = 15 * 1024 * 1024  # taille maximale d'une requête
 
     # Comptes créés AVANT cette date (ISO) = comptes existants : ils gardent
     # leur NEXA ID dans le bot sans repasser par la création de compte.
@@ -216,6 +223,10 @@ class Settings(BaseSettings):
             vals.append(self.FRONTEND_URL.rstrip("/"))
 
         return vals
+
+    @property
+    def jessikapay_countries_list(self) -> list[str]:
+        return [c.strip().upper() for c in self.JESSIKAPAY_COUNTRIES.split(",") if c.strip()]
 
     def get_supported_currencies(self):
         return [

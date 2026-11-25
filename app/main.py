@@ -424,6 +424,12 @@ async def request_timeout(request: Request, call_next):
 # Réponses JSON compressées (liste d'annonces, etc.) : plus rapide en 3G/4G.
 app.add_middleware(GZipMiddleware, minimum_size=800)
 
+# Sécurité : limitation de débit, taille maximale, en-têtes. Installée AVANT
+# le CORS pour que les refus (429/413) portent aussi les en-têtes CORS.
+from app.security import install as install_security  # noqa: E402
+
+install_security(app)
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins_list,
