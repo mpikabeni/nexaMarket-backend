@@ -191,6 +191,8 @@ SCHEMA_PATCHES = [
     "ALTER TABLE listings ADD COLUMN IF NOT EXISTS payout_country VARCHAR(10)",
     "ALTER TABLE listings ADD COLUMN IF NOT EXISTS payout_method VARCHAR(60)",
     "ALTER TABLE listings ADD COLUMN IF NOT EXISTS payout_phone VARCHAR(40)",
+    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS price_xaf NUMERIC(18,2)",
+    "ALTER TABLE listings ADD COLUMN IF NOT EXISTS base_currency VARCHAR(3)",
     "ALTER TABLE transactions ADD COLUMN IF NOT EXISTS seller_payout_started_at TIMESTAMPTZ",
 ]
 

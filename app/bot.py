@@ -80,6 +80,12 @@ def main_keyboard() -> InlineKeyboardMarkup:
         [
             [
                 InlineKeyboardButton(
+                    "🛠 Ouvrir l'administration (valider les annonces)",
+                    web_app=WebAppInfo(url=f"{FRONTEND_URL.rstrip('/')}/admin/"),
+                ),
+            ],
+            [
+                InlineKeyboardButton(
                     "🛒 Ouvrir NexMarket",
                     web_app=WebAppInfo(url=FRONTEND_URL),
                 )

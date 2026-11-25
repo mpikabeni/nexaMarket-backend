@@ -153,6 +153,23 @@ async def _gram_loop() -> None:
         await asyncio.sleep(20)
 
 
+async def _gram_price_loop() -> None:
+    """Toutes les 10 minutes : cours du GRAM + prix des annonces GRAM."""
+    from app.services import gram_price
+
+    while True:
+        try:
+            changed = await gram_price.refresh_all(AsyncSessionLocal)
+            if changed:
+                logger.info("%s prix GRAM actualisé(s)", changed)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("Échec de l'actualisation des prix GRAM")
+
+        await asyncio.sleep(gram_price.REFRESH_SECONDS)
+
+
 # ============================================================
 # VERSEMENT DES COMMISSIONS vers le compte Mobile Money de NexMarket
 # ============================================================
@@ -342,6 +359,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_deposit_sync_loop()),
         asyncio.create_task(_payout_sync_loop()),
         asyncio.create_task(_commission_loop()),
+        asyncio.create_task(_gram_price_loop()),
         asyncio.create_task(_gram_loop()),
         asyncio.create_task(_keepalive_loop()),
     ]
