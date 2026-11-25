@@ -120,3 +120,20 @@ si vous préférez les créer à la main).
 ## 14. v39 — NEXA ID dans le bot seulement après création du compte
 - /start : le NEXA ID n'apparaît que si le compte est créé dans la mini-app (onboarded_at) ou créé avant LEGACY_ACCOUNTS_BEFORE.
 - À la fin de la création du compte, le bot envoie le NEXA ID en message.
+
+## 15. v40 — Prix GRAM « au cours » (actualisé toutes les 10 min)
+- Annonce GRAM : le vendeur saisit un prix en FCFA (listings.price_xaf, colonne ajoutée automatiquement).
+  listings.price = montant en GRAM, recalculé toutes les 10 min (boucle _gram_price_loop) et une dernière fois à l'achat.
+- Cours : CoinGecko (id the-open-network) puis Binance (TONUSDT) en secours ; GRAM_USD_PRICE (env) force un cours manuel.
+- GET /api/rates renvoie « gram » : usd, xaf, updated_at, next_refresh_at (compte à rebours de l'appli).
+- Anciennes annonces GRAM (price_xaf vide) : prix fixe en GRAM, inchangé.
+
+## 16. v41 — Validation des annonces : alerte admin dans le bot
+- Nouvelle annonce (photos ou non) : message à TOUS les admins avec le bouton « 🛠 Ouvrir l'administration » (mini-app <FRONTEND_URL>/admin/).
+  Correctif : un canal public (sans photo) ne déclenchait plus aucune alerte.
+- /admin : bouton « Ouvrir l'administration » ajouté.
+
+## 17. v42 — GRAM : toutes les devises
+- Prix d'une annonce GRAM fixé dans n'importe quelle devise (champ price_currency ; colonnes listings.price_xaf = montant de base, listings.base_currency).
+- /api/rates -> gram.usd_table : unités de chaque devise pour 1 USD (open.er-api.com ; XAF/XOF/EUR alignés sur le taux officiel).
+- Correctif : boucle infinie get_rates <-> get_gram_xaf (v40) supprimée.
