@@ -146,3 +146,16 @@ si vous préférez les créer à la main).
 ## 19. v44 — Numéro JP demandé UNE fois, à l'inscription
 - /users/me/onboarding exige jp_number (vérifié via lookup JessiKaPay) -> users.jp_number (colonne ajoutée automatiquement).
 - Création d'annonce : utilise payout_phone s'il est saisi (changement), sinon users.jp_number ; le dernier JP vérifié devient celui du compte.
+
+## 20. v45 — Cours GRAM plus robuste
+- 4 sources (CoinGecko, Binance, Coinbase, OKX) ; next_refresh_at = prochain essai réel (1 min après un échec) : le compte à rebours ne reste plus bloqué à 00:00.
+
+## 21. v46 — Sécurité renforcée
+- app/security.py : limitation de débit (connexion 12/min, achat 6/min, annonce 10/min, lookup JP 15/min, défaut 300/min par client, webhooks exemptés), taille max 15 Mo (MAX_BODY_BYTES), en-têtes (nosniff, frame DENY, HSTS, CSP stricte API, no-store sur les routes sensibles).
+- IP client = entrée ajoutée par TON proxy (TRUSTED_PROXY_HOPS=1), non falsifiable par le client.
+- Achat : max 5 paiements en attente par heure et par acheteur.
+
+## 22. v47 — Cours GRAM mondial, pays « Bientôt disponible »
+- Cours GRAM : médiane de CoinGecko (id « gram », agrégat mondial), Gate, Binance, OKX, Coinbase ; une source qui s'écarte de plus de 8 % est écartée. (L'ancien id « the-open-network » / symbole TON ne suivait plus le renommage en GRAM.)
+- JESSIKAPAY_COUNTRIES (env) : pays où JessiKaPay encaisse (défaut : CI,SN,TG,BJ,BF,ML,CM,GA,NE,CG,CD,GN,TD,GH,KE,CF,GW — repris de l'ancienne liste du projet, NON confirmé par la doc JessiKaPay). Autres pays : « Bientôt disponible » (refus 400 côté serveur aussi).
+- GET /api/deposits/pay-countries : liste des pays ouverts.
