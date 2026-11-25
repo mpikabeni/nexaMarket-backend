@@ -69,6 +69,19 @@ class Listing(Base):
         default="XAF",
     )
 
+    # Annonce GRAM : prix de base en FCFA. Le montant en GRAM (price) suit le
+    # cours et est recalculé toutes les 10 minutes. NULL = ancien prix fixe.
+    # (« price_xaf » = montant de base, exprimé dans base_currency : FCFA, EUR, USD, NGN…)
+    price_xaf: Mapped[Decimal | None] = mapped_column(
+        Numeric(18, 2),
+        nullable=True,
+    )
+
+    base_currency: Mapped[str | None] = mapped_column(
+        String(3),
+        nullable=True,
+    )
+
     # Adresse GRAM (TON) du vendeur : renseignée si currency == "GRAM".
     seller_gram_address: Mapped[str | None] = mapped_column(
         String(80),

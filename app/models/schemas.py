@@ -156,6 +156,9 @@ class ListingCreate(BaseModel):
     payout_method: str | None = Field(default=None, max_length=60)
     payout_phone: str | None = Field(default=None, max_length=24)
 
+    # Annonce GRAM : devise dans laquelle le vendeur fixe son prix (défaut FCFA).
+    price_currency: str | None = Field(default=None, max_length=3)
+
     price: Decimal = Field(
         ...,
         gt=0,
