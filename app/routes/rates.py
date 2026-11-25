@@ -28,7 +28,7 @@ CACHE_SECONDS = 6 * 3600
 RETRY_SECONDS = 300
 SOURCE_URL = "https://open.er-api.com/v6/latest/USD"
 
-_cache: dict = {"xaf_per_usd": None, "fetched": 0.0, "tried": 0.0, "source": None}
+_cache: dict = {"xaf_per_usd": None, "fetched": 0.0, "tried": 0.0, "source": None, "table": {}}
 
 
 def _manual_rate() -> float | None:
@@ -47,31 +47,75 @@ async def _refresh() -> None:
             response = await client.get(SOURCE_URL)
             response.raise_for_status()
             data = response.json()
-        rate = float((data.get("rates") or {}).get("XAF") or 0)
+        raw = data.get("rates") or {}
+        rate = float(raw.get("XAF") or 0)
+        # Toutes les devises (unités pour 1 USD) : sert aux prix des annonces GRAM.
+        table = {
+            str(code).upper(): float(value)
+            for code, value in raw.items()
+            if isinstance(code, str) and len(code) == 3 and isinstance(value, (int, float)) and value > 0
+        }
         # Garde-fou : un taux absurde n'est jamais publié.
         if 300 < rate < 1500:
-            _cache.update(xaf_per_usd=rate, fetched=now, source="open.er-api.com")
+            _cache.update(xaf_per_usd=rate, fetched=now, source="open.er-api.com", table=table)
         else:
             logger.warning("Taux USD/XAF ignoré (valeur suspecte) : %s", rate)
     except Exception as exc:  # réseau, JSON, etc.
         logger.warning("Taux USD/XAF indisponible : %s", exc)
 
 
-@router.get("")
-async def get_rates():
+async def _usd_xaf() -> tuple[float | None, str | None]:
     manual = _manual_rate()
     now = time.time()
 
     if manual:
-        xaf_per_usd, source = manual, "manuel"
-    else:
-        stale = now - _cache["fetched"] > CACHE_SECONDS
-        may_retry = now - _cache["tried"] > RETRY_SECONDS
-        if stale and may_retry:
-            await _refresh()
-        xaf_per_usd, source = _cache["xaf_per_usd"], _cache["source"]
+        return manual, "manuel"
+
+    stale = now - _cache["fetched"] > CACHE_SECONDS
+    may_retry = now - _cache["tried"] > RETRY_SECONDS
+
+    if stale and may_retry:
+        await _refresh()
+
+    return _cache["xaf_per_usd"], _cache["source"]
+
+
+async def usd_table() -> dict[str, float]:
+    """Unités de chaque devise pour 1 USD (XAF/XOF/EUR alignés sur le taux officiel)."""
+
+    xaf_per_usd, _source = await _usd_xaf()
+    table = dict(_cache.get("table") or {})
+
+    if xaf_per_usd:
+        table["XAF"] = table["XOF"] = xaf_per_usd
+        table["EUR"] = xaf_per_usd / EUR_XAF
+
+    table["USD"] = 1.0
+    return table
+
+
+@router.get("")
+async def get_rates():
+    xaf_per_usd, source = await _usd_xaf()
+
+    # Cours du GRAM : mis à jour toutes les 10 minutes (compte à rebours côté appli).
+    from app.services import gram_price
+
+    gram_usd, gram_fetched, gram_source = await gram_price.get_gram_usd()
+    gram_xaf = await gram_price.get_gram_xaf() if gram_usd else None
+    table = await usd_table()
 
     return {
+        "gram": {
+            "usd": gram_usd,
+            "xaf": float(gram_xaf) if gram_xaf else None,
+            "updated_at": gram_fetched or None,
+            "next_refresh_at": (gram_fetched + gram_price.REFRESH_SECONDS) if gram_fetched else None,
+            "interval_seconds": gram_price.REFRESH_SECONDS,
+            "source": gram_source,
+            # Devises utilisables pour fixer un prix d'annonce GRAM (unités pour 1 USD).
+            "usd_table": {k: round(v, 6) for k, v in table.items()},
+        },
         "base": "XAF",
         # unités de chaque devise pour 1 XAF
         "rates": {
