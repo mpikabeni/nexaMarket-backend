@@ -541,11 +541,14 @@ async def create_listing(
     # Numéro JP du vendeur (compte JessiKaPay) : vérifié, l'argent y arrivera.
     payout = (None, None, None)
 
-    if payload.payout_phone:
+    # JP saisi dans la vente (changement) sinon celui du compte (inscription).
+    payout_input = payload.payout_phone or current_user.jp_number
+
+    if payout_input:
         from app.services.jessikapay import jessikapay_service, normalize_jp
         from app.services.moneyfusion import MoneyFusionError
 
-        jp = normalize_jp(payload.payout_phone)
+        jp = normalize_jp(payout_input)
 
         try:
             info = await jessikapay_service.lookup(jp)
@@ -559,6 +562,10 @@ async def create_listing(
             )
 
         payout = ("jp", "jessikapay", jp)
+
+        # Le dernier JP vérifié devient celui du compte.
+        if payload.payout_phone and current_user.jp_number != jp:
+            current_user.jp_number = jp
 
     listing = Listing(
         channel_id=channel.id,

@@ -178,8 +178,29 @@ async def complete_onboarding(
             "Tu dois accepter les conditions pour créer ton compte.",
         )
 
+    # Numéro JessiKaPay : vérifié maintenant, on ne le redemandera plus.
+    from app.services.jessikapay import jessikapay_service, normalize_jp
+    from app.services.moneyfusion import MoneyFusionError
+
+    jp = normalize_jp(payload.jp_number)
+
+    try:
+        info = await jessikapay_service.lookup(jp)
+    except MoneyFusionError as exc:
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE,
+            "Impossible de vérifier ton numéro JP pour le moment. Réessaie dans un instant.",
+        ) from exc
+
+    if not info.get("found"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Numéro JP introuvable. Récupère-le dans le bot @JessiKaPayBot.",
+        )
+
     current_user.country = country
     current_user.phone = phone
+    current_user.jp_number = jp
 
     first_time = current_user.onboarded_at is None
 
