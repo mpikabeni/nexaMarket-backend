@@ -499,21 +499,42 @@ class NotificationService:
 # ADMIN : nouvelle annonce + photos de preuve
 # ============================================================
 
+def admin_panel_markup():
+    """Bouton qui ouvre la console admin DANS Telegram (mini-app)."""
+
+    from telegram import InlineKeyboardButton, InlineKeyboardMarkup, WebAppInfo
+
+    from app.config import settings
+
+    url = f"{(settings.FRONTEND_URL or '').rstrip('/')}/admin/"
+
+    return InlineKeyboardMarkup(
+        [[InlineKeyboardButton("🛠 Ouvrir l'administration", web_app=WebAppInfo(url=url))]]
+    )
+
+
 async def _send_listing_proofs(chat_ids: list[int], text: str, photos: list[bytes]) -> None:
     from telegram import InputMediaPhoto
 
     bot = get_telegram_service().bot
+    markup = admin_panel_markup()
 
     for chat_id in chat_ids:
         try:
             if not photos:
+                # Canal public : aucune photo, mais l'admin est prévenu.
                 await asyncio.wait_for(
-                    bot.send_message(chat_id=chat_id, text=text[:4000]),
+                    bot.send_message(chat_id=chat_id, text=text[:4000], reply_markup=markup),
                     timeout=30,
                 )
             elif len(photos) == 1:
                 await asyncio.wait_for(
-                    bot.send_photo(chat_id=chat_id, photo=photos[0], caption=text[:1000]),
+                    bot.send_photo(
+                        chat_id=chat_id,
+                        photo=photos[0],
+                        caption=text[:1000],
+                        reply_markup=markup,
+                    ),
                     timeout=30,
                 )
             else:
@@ -528,19 +549,28 @@ async def _send_listing_proofs(chat_ids: list[int], text: str, photos: list[byte
                     bot.send_media_group(chat_id=chat_id, media=media),
                     timeout=40,
                 )
+                # Un groupe de photos ne peut pas porter de bouton : message à part.
+                await asyncio.wait_for(
+                    bot.send_message(
+                        chat_id=chat_id,
+                        text="👆 Annonce à valider : ouvre l'administration.",
+                        reply_markup=markup,
+                    ),
+                    timeout=30,
+                )
         except Exception as exc:
-            logger.warning("Preuves non envoyées à l'admin %s : %s", chat_id, exc)
+            logger.warning("Notification d'annonce non envoyée à l'admin %s : %s", chat_id, exc)
 
 
 def notify_admins_listing(chat_ids: list[int], text: str, photos: list[bytes]) -> None:
-    """Envoi non bloquant (les photos restent consultables dans la console)."""
+    """Envoi non bloquant. Photos facultatives (canal public = aucune photo)."""
 
-    if not chat_ids or not photos:
+    if not chat_ids:
         return
 
     try:
         task = asyncio.get_running_loop().create_task(
-            _send_listing_proofs(chat_ids, text, photos)
+            _send_listing_proofs(chat_ids, text, photos or [])
         )
     except RuntimeError:
         return

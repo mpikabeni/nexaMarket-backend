@@ -156,6 +156,12 @@ class TransactionService:
                 "Vous ne pouvez pas acheter votre propre annonce."
             )
 
+        # Annonce GRAM « au cours » : dernier recalcul au moment de l'achat,
+        # la transaction fige ensuite le montant exact à envoyer.
+        from app.services import gram_price
+
+        await gram_price.refresh_listing(listing)
+
         price = self._money(listing.price)
 
         if price <= 0:
