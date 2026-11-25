@@ -10,6 +10,7 @@ Option « prix en FCFA qui suit le cours » :
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import time
@@ -23,38 +24,78 @@ logger = logging.getLogger("nexmarket.gram_price")
 REFRESH_SECONDS = 600  # 10 minutes
 RETRY_SECONDS = 60
 
-# CoinGecko d'abord, Binance en secours. GRAM_USD_PRICE (env) force un cours.
+# Cours MONDIAL : médiane de plusieurs sources (CoinGecko = agrégat mondial,
+# Gate, Binance, OKX, Coinbase). Le Toncoin a été renommé GRAM : l'identifiant
+# CoinGecko actuel est « gram » (GRAM_COINGECKO_ID pour le changer).
+COINGECKO_ID = os.environ.get("GRAM_COINGECKO_ID", "gram").strip() or "gram"
+
 SOURCES = (
-    ("coingecko", "https://api.coingecko.com/api/v3/simple/price?ids=the-open-network&vs_currencies=usd"),
-    ("binance", "https://api.binance.com/api/v3/ticker/price?symbol=TONUSDT"),
+    ("coingecko", f"https://api.coingecko.com/api/v3/simple/price?ids={COINGECKO_ID}&vs_currencies=usd"),
+    ("gate", "https://api.gateio.ws/api/v4/spot/tickers?currency_pair=GRAM_USDT"),
+    ("binance", "https://api.binance.com/api/v3/ticker/price?symbol=GRAMUSDT"),
+    ("okx", "https://www.okx.com/api/v5/market/ticker?instId=GRAM-USDT"),
+    ("coinbase", "https://api.coinbase.com/v2/prices/GRAM-USD/spot"),
 )
 
 _cache: dict = {"usd": None, "fetched": 0.0, "tried": 0.0, "source": None}
 
 
 def _extract(name: str, data) -> float:
-    if name == "coingecko":
-        return float(((data or {}).get("the-open-network") or {}).get("usd") or 0)
-    return float((data or {}).get("price") or 0)
+    try:
+        if name == "coingecko":
+            return float(((data or {}).get(COINGECKO_ID) or {}).get("usd") or 0)
+        if name == "gate":
+            return float((data[0] if isinstance(data, list) and data else {}).get("last") or 0)
+        if name == "coinbase":
+            return float(((data or {}).get("data") or {}).get("amount") or 0)
+        if name == "okx":
+            rows = (data or {}).get("data") or [{}]
+            return float((rows[0] or {}).get("last") or 0)
+        return float((data or {}).get("price") or 0)  # binance
+    except (TypeError, ValueError, AttributeError, IndexError):
+        return 0.0
+
+
+async def _fetch_source(client, name: str, url: str) -> tuple[str, float]:
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        return name, _extract(name, response.json())
+    except Exception as exc:
+        logger.warning("Cours GRAM indisponible (%s) : %s", name, exc)
+        return name, 0.0
+
+
+def _median(values: list[float]) -> float:
+    ordered = sorted(values)
+    mid = len(ordered) // 2
+    return ordered[mid] if len(ordered) % 2 else (ordered[mid - 1] + ordered[mid]) / 2
 
 
 async def _refresh() -> None:
     now = time.time()
     _cache["tried"] = now
 
-    for name, url in SOURCES:
-        try:
-            async with httpx.AsyncClient(timeout=6.0) as client:
-                response = await client.get(url)
-                response.raise_for_status()
-                value = _extract(name, response.json())
-            # Garde-fou : un cours absurde n'est jamais utilisé.
-            if 0.05 < value < 500:
-                _cache.update(usd=value, fetched=now, source=name)
-                return
-            logger.warning("Cours GRAM ignoré (%s, valeur suspecte) : %s", name, value)
-        except Exception as exc:
-            logger.warning("Cours GRAM indisponible (%s) : %s", name, exc)
+    async with httpx.AsyncClient(timeout=6.0, headers={"User-Agent": "NexMarket/1.0"}) as client:
+        results = await asyncio.gather(*(_fetch_source(client, n, u) for n, u in SOURCES))
+
+    # Garde-fou : on ne garde que les cours plausibles.
+    good = [(n, v) for n, v in results if 0.05 < v < 500]
+
+    if not good:
+        return
+
+    values = [v for _n, v in good]
+    center = _median(values)
+
+    # Avec 3 sources ou plus, une source qui s'écarte de plus de 8 % de la
+    # médiane (cours figé, mauvais symbole) est écartée.
+    if len(good) >= 3:
+        good = [(n, v) for n, v in good if abs(v - center) / center <= 0.08]
+        center = _median([v for _n, v in good])
+
+    names = "+".join(n for n, _v in good)
+    _cache.update(usd=center, fetched=now, source=f"médiane mondiale ({names})")
 
 
 async def get_gram_usd() -> tuple[float | None, float, str | None]:
@@ -157,3 +198,21 @@ async def refresh_all(session_factory) -> int:
             await db.commit()
 
     return changed
+
+
+def next_refresh_at() -> float | None:
+    """Prochain rafraîchissement RÉEL : 10 min après la dernière mise à jour
+    réussie, ou 1 min après la dernière tentative si le cours est en retard
+    (sinon le compte à rebours resterait bloqué à 00:00)."""
+
+    fetched = _cache["fetched"]
+
+    if not fetched:
+        return None
+
+    due = fetched + REFRESH_SECONDS
+
+    if time.time() < due:
+        return due
+
+    return max(_cache["tried"], time.time()) + RETRY_SECONDS
