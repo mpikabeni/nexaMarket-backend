@@ -137,3 +137,12 @@ si vous préférez les créer à la main).
 - Prix d'une annonce GRAM fixé dans n'importe quelle devise (champ price_currency ; colonnes listings.price_xaf = montant de base, listings.base_currency).
 - /api/rates -> gram.usd_table : unités de chaque devise pour 1 USD (open.er-api.com ; XAF/XOF/EUR alignés sur le taux officiel).
 - Correctif : boucle infinie get_rates <-> get_gram_xaf (v40) supprimée.
+
+## 18. v43 — Bot : lien vers @JessiKaPayBot (récupérer son numéro JP)
+- Bouton « Récupérer mon numéro JP » sous /start, /retrait et le message d'accueil ; texte de /retrait : étape 0 = ouvrir @JessiKaPayBot.
+- Correctif : le bouton « Ouvrir l'administration » (v41) était dans le clavier de TOUS les utilisateurs ; il est maintenant seulement dans le menu /admin.
+- Page de vente : lien « Récupérer mon numéro JP dans @JessiKaPayBot » sous le champ JP.
+
+## 19. v44 — Numéro JP demandé UNE fois, à l'inscription
+- /users/me/onboarding exige jp_number (vérifié via lookup JessiKaPay) -> users.jp_number (colonne ajoutée automatiquement).
+- Création d'annonce : utilise payout_phone s'il est saisi (changement), sinon users.jp_number ; le dernier JP vérifié devient celui du compte.
