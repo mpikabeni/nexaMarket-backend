@@ -159,3 +159,7 @@ si vous préférez les créer à la main).
 - Cours GRAM : médiane de CoinGecko (id « gram », agrégat mondial), Gate, Binance, OKX, Coinbase ; une source qui s'écarte de plus de 8 % est écartée. (L'ancien id « the-open-network » / symbole TON ne suivait plus le renommage en GRAM.)
 - JESSIKAPAY_COUNTRIES (env) : pays où JessiKaPay encaisse (défaut : CI,SN,TG,BJ,BF,ML,CM,GA,NE,CG,CD,GN,TD,GH,KE,CF,GW — repris de l'ancienne liste du projet, NON confirmé par la doc JessiKaPay). Autres pays : « Bientôt disponible » (refus 400 côté serveur aussi).
 - GET /api/deposits/pay-countries : liste des pays ouverts.
+
+## 23. v48 — Anciennes annonces GRAM converties « au cours »
+- Les annonces GRAM créées avant le prix « au cours » (prix fixe en GRAM) sont converties au prochain cycle (10 min) : leur valeur du jour en FCFA devient la base, puis le montant en GRAM suit le cours mondial. Désactivable : GRAM_CONVERT_LEGACY=0.
+- Si le cours est indisponible, un avertissement est écrit dans les logs (les prix ne bougent pas).
