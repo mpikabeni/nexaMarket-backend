@@ -173,24 +173,45 @@ async def refresh_listing(listing) -> bool:
 
 
 async def refresh_all(session_factory) -> int:
-    """Met à jour toutes les annonces GRAM actives (toutes les 10 min)."""
+    """Met à jour toutes les annonces GRAM (toutes les 10 min).
+
+    1) Anciennes annonces à prix GRAM FIXE (créées avant le prix « au cours ») :
+       converties une fois, en gardant leur valeur actuelle en FCFA comme base
+       (désactivable avec GRAM_CONVERT_LEGACY=0).
+    2) Annonces « au cours » : le montant en GRAM suit le cours mondial.
+    """
 
     from app.models.listing import Listing
 
     changed = 0
+    xaf_per_gram = await get_gram_xaf()
+
+    if xaf_per_gram is None:
+        logger.warning("Cours du GRAM indisponible : les prix des annonces GRAM ne sont pas actualisés.")
+        return 0
+
+    convert_legacy = os.environ.get("GRAM_CONVERT_LEGACY", "1").strip().lower() not in {"0", "false", "no"}
 
     async with session_factory() as db:
         rows = (
             await db.execute(
                 select(Listing).where(
                     Listing.currency == "GRAM",
-                    Listing.price_xaf.is_not(None),
                     Listing.status.in_(("published", "pending_review")),
                 )
             )
         ).scalars().all()
 
         for listing in rows:
+            if not listing.price_xaf:
+                if not convert_legacy:
+                    continue
+                # Ancien prix fixe en GRAM -> valeur du jour en FCFA comme base.
+                listing.price_xaf = (Decimal(listing.price) * xaf_per_gram).to_integral_value()
+                listing.base_currency = "XAF"
+                changed += 1
+                logger.info("Annonce GRAM %s convertie « au cours » : %s XAF", listing.id, listing.price_xaf)
+
             if await refresh_listing(listing):
                 changed += 1
 
@@ -198,21 +219,3 @@ async def refresh_all(session_factory) -> int:
             await db.commit()
 
     return changed
-
-
-def next_refresh_at() -> float | None:
-    """Prochain rafraîchissement RÉEL : 10 min après la dernière mise à jour
-    réussie, ou 1 min après la dernière tentative si le cours est en retard
-    (sinon le compte à rebours resterait bloqué à 00:00)."""
-
-    fetched = _cache["fetched"]
-
-    if not fetched:
-        return None
-
-    due = fetched + REFRESH_SECONDS
-
-    if time.time() < due:
-        return due
-
-    return max(_cache["tried"], time.time()) + RETRY_SECONDS
